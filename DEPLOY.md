@@ -13,7 +13,7 @@ Everything below has been designed and tested locally; **nothing has been deploy
 | Caddyfile | Passes `caddy validate` (Caddy 2.11.4), `caddy fmt`-clean. |
 | End-to-end | Verified locally: real Caddy in front of shoebox, driven by `Host: share-<id>.enzoiwith.us`. Secret→cookie exchange, asset loading, sibling-host 404s, cross-bundle cookie forgery all confirmed. |
 | CI | `.github/workflows/docker.yml` → `ghcr.io/bigsaam/shoebox`, gated on tests + typecheck + `caddy validate`. Never run. |
-| Deployed | **No.** No image pushed, no tunnel route, no DNS. |
+| Deployed | **No.** No image pushed, no tunnel created, no DNS record. |
 
 ## Decisions already locked
 
@@ -26,10 +26,12 @@ Everything below has been designed and tested locally; **nothing has been deploy
   bypass secret can never be served as a file.
 - **`SHOEBOX_COOKIE_DOMAIN` is refused at startup** with this host template. The cost
   is one password prompt per bundle; bypass links are unaffected.
+- **shoebox brings its own Cloudflare Tunnel.** The `utils` tunnel is never edited, so
+  no step here can take mytube / tripwala / apprise / birds down.
 
 ---
 
-## ⚠️ Verify these three before touching the tunnel
+## ⚠️ Verify these three before deploying
 
 They are assumptions, not facts I could check from a laptop. Each one blocks deploy.
 
@@ -41,10 +43,10 @@ They are assumptions, not facts I could check from a laptop. Each one blocks dep
 
 2. **Your plan allows a *proxied* wildcard DNS record.**
    Proxied wildcards have historically been a paid-plan feature. Try creating
-   `*.enzoiwith.us` CNAME → `<TUNNEL_ID>.cfargotunnel.com` (proxied) and see.
+   `*.enzoiwith.us` CNAME → `<SHOEBOX_TUNNEL_UUID>.cfargotunnel.com` (proxied).
    *If it is blocked:* have shoebox create one proxied CNAME per bundle through the
-   Cloudflare API on publish, and delete it on `rm`. The `*.enzoiwith.us` **ingress**
-   rule still works either way — only the DNS record needs to exist.
+   Cloudflare API on publish and delete it on `rm` (see §4). The tunnel ingress needs
+   no change either way — only the DNS record has to exist.
 
 3. **`utils` has disk.** `homelab/utils/README.md` records the Docker root filesystem
    filling twice. Run `docker system df` before adding a service that stores uploads.
@@ -78,59 +80,75 @@ a pull secret on the host.
 
 ```bash
 ssh manz-utils
-mkdir -p /docker/services/shoebox && cd /docker/services/shoebox
+mkdir -p /docker/services/shoebox/cloudflared && cd /docker/services/shoebox
 # copy compose.yml, Caddyfile, .env.example from deploy/homelab/
-tailscale ip -4                      # → SHOEBOX_BIND_ADDR in .env.example
+TS_IP=$(tailscale ip -4) && echo "$TS_IP"   # → SHOEBOX_BIND_ADDR in .env.example
 op inject -i .env.example -o .env
-docker compose up -d
-docker compose ps                    # both containers healthy
-curl -s localhost:8080/_/health      # {"ok":true}   (from the VM itself)
+
+# Bring up the app first. shoebox-tunnel would crash-loop until step 3 writes its config.
+docker compose up -d shoebox shoebox-caddy
+docker compose ps                            # both healthy
+
+curl -s "http://$TS_IP:8080/_/health"        # {"ok":true} — shoebox binds only Tailscale
+docker compose exec shoebox-caddy wget -qO- http://shoebox:8080/_/health   # from inside
 ```
 
-Both containers join the existing external `utils` network, so the `tunnel` container
-reaches `shoebox-caddy` by name — same as `tripwala-caddy` and `mytube`.
+All three containers join the existing external `utils` network, so `shoebox-tunnel`
+reaches `shoebox-caddy` by name — the same mechanism `tripwala-caddy` uses.
 
-### 3. Tunnel route — a wildcard, and it must go LAST
+Note `SHOEBOX_BIND_ADDR` binds the **Tailscale address only**. `curl localhost:8080`
+on the VM will fail, and that is the point: the upload API is not on the LAN.
 
-A per-hostname route will not work: bundle hostnames are minted at publish time.
-cloudflared only supports a **leading `*.` label** (`ingress.matchHost` does
-`strings.HasPrefix(ruleHost, "*.")` and nothing else), so `share-*.enzoiwith.us`
-never matches. And `FindMatchingRule` returns the **first** match.
+### 3. Its own tunnel
 
-Edit `config/homelab/utils/cloudflared/config.yml`:
+shoebox runs `shoebox-tunnel`, a Cloudflare Tunnel of its own. A bad config here
+cannot drop mytube, tripwala, apprise or birds, and the ingress collapses to a single
+catch-all — Caddy already 404s any host that is not `share-<id>.enzoiwith.us`.
 
-```yaml
-ingress:
-  - hostname: message.enzoiwith.us
-    service: http://apprise:8000
-  # … every existing specific hostname stays here, ABOVE the wildcard …
-  - hostname: mytube.enzoiwith.us
-    service: http://mytube:3000
-
-  - hostname: "*.enzoiwith.us"        # ← new, second-to-last
-    service: http://shoebox-caddy:80
-
-  - service: http_status:404          # ← stays last
+```bash
+cloudflared tunnel create shoebox            # note the UUID
+cp ~/.cloudflared/<UUID>.json /docker/services/shoebox/cloudflared/
+chmod 600 /docker/services/shoebox/cloudflared/<UUID>.json
+cp deploy/homelab/cloudflared/config.yml.example \
+   /docker/services/shoebox/cloudflared/config.yml
+# fill in <SHOEBOX_TUNNEL_UUID> in that file, twice
+docker compose up -d shoebox-tunnel
 ```
 
-Then `docker restart tunnel` on manz-utils (the config is mounted read-only from
-`$CONFIGDIR/cloudflared`).
+*Alternative:* reuse the `utils` tunnel instead — delete the `shoebox-tunnel`
+service and add the rule from `cloudflared-ingress-shared-tunnel` (see
+`deploy/homelab/cloudflared-ingress.snippet.yml`). It must go **second-to-last**,
+ahead of `http_status:404`, because `FindMatchingRule` returns the first match and
+cloudflared only matches a leading `*.` label. Higher blast radius; only do it if a
+second tunnel credential is not worth it.
 
-Nothing existing changes: every named service still matches its own rule first.
-Only unrouted hosts fall through to `shoebox-caddy`, which 404s anything that is not
-a `share-<id>` host.
+### 4. DNS — the part that actually makes bundles resolve
 
-### 4. DNS
-
-`cloudflared tunnel route dns` will not create a wildcard. Add by hand:
+One proxied wildcard record, pointing at whichever tunnel serves shoebox.
+`cloudflared tunnel route dns` will not create a wildcard, so add it by hand:
 
 ```
-*.enzoiwith.us   CNAME   <TUNNEL_ID>.cfargotunnel.com   (proxied)
+*.enzoiwith.us   CNAME   <SHOEBOX_TUNNEL_UUID>.cfargotunnel.com   (proxied)
 ```
 
-Specific records still win over the wildcard.
-**Side effect to accept:** every nonexistent subdomain now resolves and reaches the
-tunnel, so typos land on shoebox-caddy's 404 rather than NXDOMAIN.
+Specific records (`mytube`, `tripwala`, …) still win over the wildcard and keep
+pointing at the utils tunnel. Only unrouted subdomains land on shoebox.
+
+**Side effect to accept:** every nonexistent subdomain now resolves and reaches
+shoebox-caddy's 404 rather than returning NXDOMAIN.
+
+#### Do not add a route per publish
+
+An ingress rule is not what makes a hostname resolve — DNS is. A per-bundle ingress
+rule with no DNS record still returns NXDOMAIN, so it buys nothing, and scripting
+edits to a shared tunnel's config on every publish risks dropping every other service
+on the VM.
+
+If proxied **wildcard** DNS turns out to be unavailable on your plan, the correct
+per-publish action is to create a proxied **CNAME per bundle** through the Cloudflare
+API (`Zone:DNS:Edit`), and delete it on `shoebox rm`. That is a real feature worth
+adding *then*, not now — it costs an API token in the container, cleanup on delete,
+and it leaves one public DNS record per artifact. The wildcard leaves nothing behind.
 
 ### 5. Wire up the CLI
 
@@ -161,9 +179,15 @@ shoebox ls && shoebox rm <id>
 
 Per `config/AGENTS.md`, source stays out but service config belongs in it:
 
-- `config/homelab/utils/shoebox/` ← `compose.yml`, `Caddyfile`, `.env.example`, README
-- `config/homelab/utils/cloudflared/config.yml` ← the wildcard ingress rule
+- `config/homelab/utils/shoebox/` ← `compose.yml`, `Caddyfile`, `.env.example`,
+  `cloudflared/config.yml.example`, README
 - `config/homelab/utils/README.md` ← a row in the service table
+
+The `utils` tunnel's `cloudflared/config.yml` is **not** modified: shoebox has its own
+tunnel. (Only the shared-tunnel alternative would touch it.)
+
+Never commit `cloudflared/config.yml` or the credentials JSON — both are gitignored
+here and are host secrets, exactly like the `utils` tunnel's credentials.
 
 Commit straight to `main`, small and focused, no secrets.
 
@@ -171,9 +195,10 @@ Commit straight to `main`, small and focused, no secrets.
 
 ## Rollback
 
-Remove the `*.enzoiwith.us` ingress rule and the wildcard DNS record, restart `tunnel`,
-`docker compose down` in `/docker/services/shoebox`. Nothing else was touched: no
-existing hostname, route, or container is modified by any step above.
+`docker compose down` in `/docker/services/shoebox`, then delete the wildcard DNS
+record. With the dedicated tunnel, that is the entire footprint — the `utils` tunnel,
+its config, and every existing hostname are never touched. Optionally
+`cloudflared tunnel delete shoebox`.
 
 ---
 
@@ -195,7 +220,7 @@ existing hostname, route, or container is modified by any step above.
 | `src/authz.ts` | The forward_auth endpoint. The reason this repo exists. |
 | `src/links.ts` | `share-<id>` ⇄ hostname. |
 | `src/store.ts` | Bundles on disk; `resolveWithin` is a security boundary. |
-| `deploy/homelab/` | compose, Caddyfile, ingress snippet, deploy README |
+| `deploy/homelab/` | compose (shoebox + caddy + its own tunnel), Caddyfile, cloudflared config, deploy README |
 | `test/authz.test.ts` | The forward_auth contract, asserted |
 | `AGENTS.md` | How an agent should publish (also symlinked as `CLAUDE.md`) |
 

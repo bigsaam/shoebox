@@ -4,3 +4,8 @@ data/
 .env
 *.log
 .DS_Store
+
+# Dedicated tunnel: credentials JSON and the rendered config are host secrets.
+# Only cloudflared/config.yml.example is tracked.
+deploy/homelab/cloudflared/*.json
+deploy/homelab/cloudflared/config.yml

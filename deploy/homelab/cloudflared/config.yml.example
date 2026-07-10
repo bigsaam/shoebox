@@ -1,0 +1,31 @@
+# A tunnel dedicated to shoebox. Locally managed, like the `utils` tunnel.
+#
+# Why its own tunnel rather than a rule on the utils one:
+#   - blast radius: a bad shoebox config cannot drop mytube, tripwala, or apprise
+#   - the ingress collapses to a single catch-all — no wildcard, no rule ordering,
+#     no "this must be second-to-last" footgun
+#   - it restarts on its own schedule
+#
+# Create it once, from a machine with `cloudflared` logged in:
+#
+#   cloudflared tunnel create shoebox
+#   # note the UUID it prints, and the credentials JSON it writes to ~/.cloudflared/
+#   cp ~/.cloudflared/<UUID>.json /docker/services/shoebox/cloudflared/
+#   chmod 600 /docker/services/shoebox/cloudflared/<UUID>.json
+#
+# Then the DNS record (proxied), which is what actually makes bundles resolve:
+#
+#   *.enzoiwith.us   CNAME   <UUID>.cfargotunnel.com   (proxied)
+#
+# Specific records (mytube, tripwala, …) still win over the wildcard and keep
+# pointing at the utils tunnel. Only unrouted subdomains land here.
+
+tunnel: <SHOEBOX_TUNNEL_UUID>
+
+# Secret host state. Never commit this file — see .gitignore.
+credentials-file: /etc/cloudflared/<SHOEBOX_TUNNEL_UUID>.json
+
+ingress:
+  # No hostname matcher is needed. This tunnel serves exactly one thing, and Caddy
+  # already refuses any host that is not share-<id>.enzoiwith.us with a 404.
+  - service: http://shoebox-caddy:80

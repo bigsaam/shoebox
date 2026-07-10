@@ -1,15 +1,20 @@
 # shoebox — password-gated preview server for throwaway static artifacts.
 #
-# Same shape as tripwala/: standalone compose on the external `utils` network so
-# the Cloudflare Tunnel reaches shoebox-caddy by name. Deploy:
+# Standalone compose on the external `utils` network. Deploy:
 #   docker compose -f /docker/services/shoebox/compose.yml up -d
 #
 # Division of labour:
-#   shoebox-caddy  serves bundle files, one origin per bundle, asks shoebox for authz
-#   shoebox        authorizes requests and accepts uploads from the CLI
+#   shoebox-tunnel  its own Cloudflare Tunnel, so a bad config here cannot drop
+#                   mytube / tripwala / apprise on the shared utils tunnel
+#   shoebox-caddy   serves bundle files, one origin per bundle, asks shoebox for authz
+#   shoebox         authorizes requests and accepts uploads from the CLI
 #
-# Only shoebox-caddy is public, and only through the tunnel. shoebox binds a port
-# on the Tailscale interface so `shoebox put` works from anywhere on the tailnet.
+# Nothing binds a public port. shoebox binds only the Tailscale address, so
+# `shoebox put` works from anywhere on the tailnet and nowhere else.
+#
+# If you would rather reuse the existing `utils` tunnel, delete the shoebox-tunnel
+# service and add a `*.enzoiwith.us` ingress rule to it — but it must be placed
+# second-to-last, ahead of the http_status:404 catch-all. See DEPLOY.md.
 
 networks:
   utils:
@@ -54,3 +59,16 @@ services:
     depends_on:
       shoebox:
         condition: service_healthy
+
+  # Dedicated tunnel. Copy cloudflared/config.yml.example -> cloudflared/config.yml
+  # and drop the credentials JSON beside it (both gitignored; see that file's header).
+  shoebox-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: shoebox-tunnel
+    restart: unless-stopped
+    networks: [utils]
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
+    depends_on:
+      - shoebox-caddy
