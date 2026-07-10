@@ -1,0 +1,27 @@
+{
+  "name": "shoebox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Password-gated preview server for throwaway static artifacts.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "bin": { "shoebox": "./bin/shoebox.mjs" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/formbody": "^8.0.2",
+    "fastify": "^5.2.1",
+    "tar": "^7.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

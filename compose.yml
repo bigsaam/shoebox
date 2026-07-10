@@ -1,0 +1,20 @@
+# Generic single-host compose. Builds from source and publishes on :8080.
+# For manz-utils (behind the Cloudflare Tunnel) use deploy/homelab/compose.yml.
+#   cp .env.example .env && docker compose up -d --build
+
+services:
+  shoebox:
+    build: .
+    container_name: shoebox
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - SHOEBOX_DATA_DIR=/data
+    ports:
+      - "${SHOEBOX_PORT:-8080}:8080"
+    volumes:
+      - shoebox-data:/data
+
+volumes:
+  shoebox-data:

@@ -1,0 +1,56 @@
+# shoebox — password-gated preview server for throwaway static artifacts.
+#
+# Same shape as tripwala/: standalone compose on the external `utils` network so
+# the Cloudflare Tunnel reaches shoebox-caddy by name. Deploy:
+#   docker compose -f /docker/services/shoebox/compose.yml up -d
+#
+# Division of labour:
+#   shoebox-caddy  serves bundle files, one origin per bundle, asks shoebox for authz
+#   shoebox        authorizes requests and accepts uploads from the CLI
+#
+# Only shoebox-caddy is public, and only through the tunnel. shoebox binds a port
+# on the Tailscale interface so `shoebox put` works from anywhere on the tailnet.
+
+networks:
+  utils:
+    external: true
+
+services:
+  shoebox:
+    image: ${SHOEBOX_IMAGE:-ghcr.io/bigsaam/shoebox:latest}
+    container_name: shoebox
+    restart: unless-stopped
+    networks: [utils]
+    env_file:
+      - .env
+    environment:
+      - SHOEBOX_DATA_DIR=/data
+      # One label deep, so Cloudflare's free *.enzoiwith.us certificate covers it.
+      - SHOEBOX_HOST_TEMPLATE=share-{id}.enzoiwith.us
+      - SHOEBOX_PUBLIC_SCHEME=https
+      # Caddy owns file serving; shoebox only answers /_/authz and the API.
+      - SHOEBOX_SERVE_FILES=false
+    ports:
+      # `tailscale ip -4` on manz-utils. Binding the Tailscale address (not 0.0.0.0)
+      # keeps the upload API off the LAN while letting any tailnet host publish.
+      - "${SHOEBOX_BIND_ADDR:-127.0.0.1}:8080:8080"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/_/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  shoebox-caddy:
+    image: caddy:2-alpine
+    container_name: shoebox-caddy
+    restart: unless-stopped
+    networks: [utils]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Read-only, and rooted at bundles/ — metadata lives in ../meta and is unreachable.
+      - ./data/bundles:/srv/bundles:ro
+    depends_on:
+      shoebox:
+        condition: service_healthy

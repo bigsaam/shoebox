@@ -1,0 +1,30 @@
+# Add to config/homelab/utils/cloudflared/config.yml.
+#
+# ⚠️  ORDER MATTERS. cloudflared returns the FIRST matching rule
+#     (ingress.FindMatchingRule iterates in order), and its wildcard support is
+#     ONLY a leading `*.` label — `share-*.enzoiwith.us` would never match.
+#
+#     So this rule must come AFTER every specific hostname and immediately BEFORE
+#     the terminal `- service: http_status:404`. Placed last, mytube/tripwala/…
+#     still match their own rules first; only unrouted hosts fall through here,
+#     and shoebox-caddy 404s anything that is not a share-<id> host.
+
+# ... all existing specific hostnames stay above ...
+
+- hostname: "*.enzoiwith.us"
+  service: http://shoebox-caddy:80
+
+- service: http_status:404
+
+# DNS: add a proxied wildcard CNAME by hand. `cloudflared tunnel route dns` will
+# not create one. Specific records (mytube, tripwala, …) still win over a wildcard.
+#
+#   *.enzoiwith.us  CNAME  <TUNNEL_ID>.cfargotunnel.com  (proxied)
+#
+# TLS: free Universal SSL covers `enzoiwith.us` and `*.enzoiwith.us` — exactly one
+# wildcard label. `share-<id>.enzoiwith.us` is one label, so it is covered. This is
+# the reason bundles are NOT at `<id>.preview.enzoiwith.us`, which is two levels
+# deep and would need Advanced Certificate Manager.
+#
+# Side effect to accept: a wildcard DNS record makes every nonexistent subdomain
+# resolve and reach the tunnel. Typos land on shoebox-caddy's 404 instead of NXDOMAIN.

@@ -1,0 +1,61 @@
+# Caddy serves the bundles. shoebox only answers "may this request proceed?".
+#
+# TLS terminates at Cloudflare and the tunnel speaks plain HTTP to this container,
+# exactly like tripwala-caddy — so `auto_https off` and a bare :80 listener.
+#
+# The tunnel routes `*.enzoiwith.us` here as its LAST rule, so every specific
+# hostname (mytube, tripwala, …) is matched earlier and never reaches us. Anything
+# that does reach us and is not a `share-<id>` host gets a 404.
+{
+	auto_https off
+	admin off
+}
+
+:80 {
+	# `share-` prefix keeps bundles out of the service namespace, and one label deep
+	# so Cloudflare's free `*.enzoiwith.us` certificate covers them. The alphabet
+	# matches src/ids.ts, so a malformed host never reaches the filesystem.
+	@bundle header_regexp bundle Host ^share-([bcdfghjkmnpqrstvwxyz23456789]{8})\.enzoiwith\.us$
+
+	# shoebox's own endpoints must never be shadowed by a bundle's files.
+	handle /_/* {
+		reverse_proxy shoebox:8080
+	}
+
+	handle /robots.txt {
+		reverse_proxy shoebox:8080
+	}
+
+	handle @bundle {
+		root * /srv/bundles/{re.bundle.1}
+
+		# `route` pins the written order. Without it Caddy sorts try_files ahead of
+		# forward_auth, which would rewrite `/?secret=…` to `/index.html?secret=…`
+		# before shoebox ever sees it, and the redirect would land on /index.html.
+		route {
+			# 2xx → carry on and serve the file.
+			# 302 → Caddy copies the response (and its Set-Cookie) to the browser.
+			#       That is how `?secret=…` becomes a session cookie, exactly once.
+			forward_auth shoebox:8080 {
+				uri /_/authz
+			}
+
+			try_files {path} {path}/index.html
+			file_server
+		}
+
+		encode zstd gzip
+
+		header {
+			X-Content-Type-Options nosniff
+			Referrer-Policy no-referrer
+			-Server
+		}
+	}
+
+	# Any other host. There is no index: knowing the password must not reveal
+	# which bundles exist.
+	handle {
+		respond "not found" 404
+	}
+}
