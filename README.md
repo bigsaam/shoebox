@@ -92,8 +92,10 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-For the homelab deployment behind the Cloudflare Tunnel, see
-[`DEPLOY.md`](DEPLOY.md) (the runbook) and [`deploy/homelab/README.md`](deploy/homelab/README.md).
+Picking this up cold? Start with [`HANDOFF.md`](HANDOFF.md).
+
+For the homelab deployment behind the Cloudflare Tunnel, see [`DEPLOY.md`](DEPLOY.md)
+(the runbook) and [`deploy/homelab/README.md`](deploy/homelab/README.md).
 
 ## CLI
 
