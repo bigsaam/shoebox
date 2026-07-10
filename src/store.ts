@@ -46,6 +46,21 @@ export function isSafeEntry(entry: string): boolean {
   return !entry.split("/").includes("..");
 }
 
+/**
+ * macOS filesystem metadata that must never be served.
+ *
+ * `tar` on macOS emits an AppleDouble `._<name>` sidecar for any file carrying extended
+ * attributes, and embeds those xattrs verbatim — including
+ * `com.apple.metadata:kMDItemWhereFroms`, the URL the file was downloaded from. `.DS_Store`
+ * likewise records the names of siblings, which may never have been published at all.
+ * Neither is ever part of what someone meant to publish.
+ */
+export function isMacMetadata(entryPath: string): boolean {
+  return entryPath
+    .split("/")
+    .some((segment) => segment.startsWith("._") || segment === ".DS_Store");
+}
+
 export class Store {
   private readonly bundlesDir: string;
   private readonly metaDir: string;

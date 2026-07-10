@@ -57,21 +57,34 @@ async function api(cfg, method, route, { body, headers } = {}) {
 }
 
 /**
+ * gzip a directory's contents.
+ *
+ * `COPYFILE_DISABLE=1` stops macOS `tar` from emitting an AppleDouble `._<name>` sidecar
+ * for every file that carries extended attributes. Those sidecars embed the xattrs
+ * verbatim — `com.apple.metadata:kMDItemWhereFroms` records the URL a file was downloaded
+ * from — so publishing them leaks where an artifact came from. Ignored by GNU tar on Linux.
+ * The server strips them too (`isMacMetadata`); this just stops us sending them.
+ */
+function tarball(dir) {
+  const buf = execFileSync("tar", ["czf", "-", "-C", dir, "."], {
+    maxBuffer: MAX_BYTES,
+    env: { ...process.env, COPYFILE_DISABLE: "1" },
+  });
+  if (buf.length > MAX_BYTES) die(`bundle too large: ${buf.length} bytes`);
+  return buf;
+}
+
+/**
  * gzip tarball of a directory's contents. A single file is staged as index.html
  * first: the server serves `/` with try_files, so every bundle needs one.
  */
 function pack(target) {
-  if (statSync(target).isDirectory()) {
-    const buf = execFileSync("tar", ["czf", "-", "-C", target, "."], { maxBuffer: MAX_BYTES });
-    if (buf.length > MAX_BYTES) die(`bundle too large: ${buf.length} bytes`);
-    return buf;
-  }
+  if (statSync(target).isDirectory()) return tarball(target);
+
   const stage = mkdtempSync(path.join(tmpdir(), "shoebox-"));
   try {
     copyFileSync(target, path.join(stage, "index.html"));
-    const buf = execFileSync("tar", ["czf", "-", "-C", stage, "."], { maxBuffer: MAX_BYTES });
-    if (buf.length > MAX_BYTES) die(`bundle too large: ${buf.length} bytes`);
-    return buf;
+    return tarball(stage);
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }

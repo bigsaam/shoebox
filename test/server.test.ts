@@ -280,3 +280,43 @@ test("the bare id redirects to the trailing-slash form, preserving the secret", 
   assert.equal(withSecret.statusCode, 302);
   assert.equal(withSecret.headers.location, `/${id}/?secret=${secret}`);
 });
+
+/** Every file inside a bundle, as posix-relative paths. */
+async function bundleFiles(id: string): Promise<string[]> {
+  const root = path.join(dataDir, "bundles", id);
+  const out: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    for (const ent of await fs.readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) await walk(full);
+      else out.push(path.relative(root, full).split(path.sep).join("/"));
+    }
+  };
+  await walk(root);
+  return out.sort();
+}
+
+// macOS `tar` writes an AppleDouble `._<name>` sidecar for any file carrying extended
+// attributes, and those sidecars embed the xattrs verbatim — including
+// `com.apple.metadata:kMDItemWhereFroms`, i.e. the URL the file was downloaded from.
+// Publishing them would serve a viewer the internal URL a report came from. The upload
+// endpoint is the trust boundary: any client can send such a tarball, not just our CLI.
+test("AppleDouble sidecars and Finder junk never land in a bundle", async () => {
+  const res = await publish({
+    "index.html": "<h1>hi</h1>",
+    "._index.html": "Mac OS X kMDItemWhereFroms https://internal.example.com/confidential",
+    "assets/app.js": "console.log(1)",
+    "assets/._app.js": "com.apple.quarantine",
+    "._.": "directory xattrs",
+    ".DS_Store": "Finder layout, names siblings that were never published",
+  });
+  assert.equal(res.statusCode, 201);
+
+  assert.deepEqual(await bundleFiles(res.json().id), ["assets/app.js", "index.html"]);
+});
+
+test("a bundle whose every member is AppleDouble junk fails, rather than publishing empty", async () => {
+  const res = await publish({ "._index.html": "junk", ".DS_Store": "junk" });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json().error, /entry not found/);
+});

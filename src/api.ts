@@ -10,7 +10,7 @@ import { parseDuration } from "./config.js";
 import { ALL_SCOPE, checkApiToken, checkPassword, cookieName, issueCookie, LoginLimiter } from "./auth.js";
 import { loginPage } from "./pages.js";
 import { linkFor, secretLinkFor } from "./links.js";
-import { Store, isSafeEntry, resolveWithin } from "./store.js";
+import { Store, isMacMetadata, isSafeEntry, resolveWithin } from "./store.js";
 import { isValidId } from "./ids.js";
 
 const limiter = new LoginLimiter();
@@ -119,9 +119,13 @@ export function registerApiRoutes(app: FastifyInstance, store: Store, cfg: Confi
           cwd: dir,
           strict: true,
           preservePaths: false,
-          // Symlinks and hardlinks are the classic tar escape; refuse both.
-          filter: (_p, stat) =>
-            "type" in stat && (stat.type === "File" || stat.type === "Directory"),
+          filter: (p, stat) => {
+            // Symlinks and hardlinks are the classic tar escape; refuse both.
+            if (!("type" in stat) || (stat.type !== "File" && stat.type !== "Directory")) {
+              return false;
+            }
+            return !isMacMetadata(p);
+          },
         }),
       );
 
