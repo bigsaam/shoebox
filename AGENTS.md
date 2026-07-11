@@ -115,7 +115,7 @@ it runs fine from an absolute path without installing anything.
 
 ```bash
 npm install
-npm test          # 41 tests; the authz and path-traversal ones are the important ones
+npm test          # 46 tests; the authz and path-traversal ones are the important ones
 npm run typecheck
 npm run dev       # needs a .env; see .env.example
 ```
