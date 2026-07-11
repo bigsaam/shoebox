@@ -20,7 +20,7 @@ That prints:
 published  report.html
   link     https://share-k3f9qhtm.enzoiwith.us/
   bypass   https://share-k3f9qhtm.enzoiwith.us/?secret=8f2c…
-  expires  never
+  expires  2026-10-09T22:20:15Z
 ```
 
 Every bundle gets its own subdomain, and therefore its own browser origin.
@@ -36,10 +36,11 @@ Give the user **both** lines and explain the difference in one sentence:
 ## Publishing
 
 ```bash
-shoebox put ./page.html                  # a single self-contained page
+shoebox put ./page.html                  # a single self-contained page (expires in 90 days)
 shoebox put ./dist/                      # a built SPA (needs dist/index.html)
 shoebox put ./dist/ --entry app.html     # …or name the page (directories only)
-shoebox put ./page.html --ttl 30d        # delete itself after 30 days
+shoebox put ./page.html --ttl 7d         # sooner: delete itself after 7 days
+shoebox put ./page.html --ttl never      # keep it permanently
 shoebox put ./page.html --json           # machine-readable, for scripting
 ```
 
@@ -66,9 +67,10 @@ shoebox rm k3f9qhtm               # delete one
 shoebox prune --older-than 30d    # delete everything older than 30 days
 ```
 
-Prefer `--ttl` at publish time over remembering to clean up later. If the artifact
-is a one-off for a single conversation, `--ttl 7d` is a good default. If the user
-might come back to it, leave it permanent and let them prune.
+Bundles expire **90 days** after publish by default, so nothing accumulates forever.
+Pass `--ttl 7d` for a one-off tied to a single conversation, or `--ttl never` for
+something the user will keep coming back to. The server sweeps expired bundles hourly;
+`shoebox prune` is only for clearing things out ahead of their TTL.
 
 ## Rules
 

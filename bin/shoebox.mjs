@@ -8,6 +8,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, 
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 const CONFIG_PATH = path.join(homedir(), ".config", "shoebox", "config.json");
@@ -98,6 +99,20 @@ function defaultEntry(target) {
   return "index.html";
 }
 
+/**
+ * Resolve the `--ttl` flag into an `x-shoebox-ttl` header value, or null to omit it.
+ *
+ * Bundles are throwaway by construction, so an unbounded default is how the disk fills.
+ * We default to 90 days — long enough to revisit a shared link, bounded enough that
+ * forgotten artifacts sweep themselves away. `--ttl never` (or none/off) opts back into a
+ * permanent bundle: null omits the header, and the server treats an absent TTL as forever.
+ */
+export function resolveTtl(flag) {
+  if (flag === undefined) return "90d";
+  if (["never", "none", "off"].includes(flag.toLowerCase())) return null;
+  return flag;
+}
+
 async function cmdPut(argv) {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -110,7 +125,7 @@ async function cmdPut(argv) {
     },
   });
   const target = positionals[0];
-  if (!target) die("usage: shoebox put <file-or-dir> [--ttl 30d] [--entry index.html] [--json]");
+  if (!target) die("usage: shoebox put <file-or-dir> [--ttl 90d|never] [--entry index.html] [--json]");
   if (!existsSync(target)) die(`no such path: ${target}`);
 
   const cfg = loadConfig();
@@ -123,7 +138,8 @@ async function cmdPut(argv) {
     "x-shoebox-name": values.name ?? path.basename(path.resolve(target)),
     "x-shoebox-entry": entry,
   };
-  if (values.ttl) headers["x-shoebox-ttl"] = values.ttl;
+  const ttl = resolveTtl(values.ttl);
+  if (ttl) headers["x-shoebox-ttl"] = ttl;
 
   const out = await api(cfg, "POST", "/_/api/bundles", { body: pack(target), headers });
 
@@ -189,10 +205,14 @@ const USAGE = `shoebox — publish throwaway static bundles
 Config: ~/.config/shoebox/config.json, or SHOEBOX_URL / SHOEBOX_API_TOKEN.
 `;
 
-const [cmd, ...rest] = process.argv.slice(2);
-const commands = { put: cmdPut, ls: cmdLs, rm: cmdRm, prune: cmdPrune, init: cmdInit };
-if (!cmd || !commands[cmd]) {
-  console.log(USAGE);
-  process.exit(cmd ? 1 : 0);
+// Only dispatch when run as a program. When imported (by a test), export the helpers
+// above and do nothing — `pathToFileURL(argv[1])` is how a module knows it is the entry.
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  const [cmd, ...rest] = process.argv.slice(2);
+  const commands = { put: cmdPut, ls: cmdLs, rm: cmdRm, prune: cmdPrune, init: cmdInit };
+  if (!cmd || !commands[cmd]) {
+    console.log(USAGE);
+    process.exit(cmd ? 1 : 0);
+  }
+  await commands[cmd](rest);
 }
-await commands[cmd](rest);

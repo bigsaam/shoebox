@@ -14,7 +14,7 @@ $ shoebox put ./india-trip.html
 published  india-trip.html
   link     https://share-k3f9qhtm.enzoiwith.us/
   bypass   https://share-k3f9qhtm.enzoiwith.us/?secret=8f2c1e…
-  expires  never
+  expires  2026-10-09T22:20:15Z
 ```
 
 Paste the link into a chat, paste the password after it. Or send the bypass link
@@ -101,7 +101,7 @@ For the homelab deployment behind the Cloudflare Tunnel, see [`DEPLOY.md`](DEPLO
 
 | Command | Does |
 |---|---|
-| `shoebox put <file\|dir>` | Publish. `--ttl 30d`, `--entry app.html`, `--name x`, `--json` |
+| `shoebox put <file\|dir>` | Publish (expires in 90d). `--ttl 7d`/`--ttl never`, `--entry app.html`, `--name x`, `--json` |
 | `shoebox ls` | List bundles with age and view counts |
 | `shoebox rm <id>` | Delete one, immediately |
 | `shoebox prune --older-than 30d` | Delete everything older than that |
