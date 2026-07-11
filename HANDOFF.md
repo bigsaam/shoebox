@@ -5,7 +5,9 @@ Read this first, then [`AGENTS.md`](AGENTS.md) (what the thing does), then
 reconstruct from the code.
 
 **Repo:** `~/workspace/shoebox` · committed on `main` · **no git remote yet**
-**Status:** built, tested, verified locally. **Never deployed. No image ever built.**
+**Status:** built, tested, verified locally. **Never deployed.** The image now builds
+clean and the full stack (real `deploy/homelab/Caddyfile` + the image) has run
+end-to-end under Docker locally — see "Verified in the 2026-07 session" below.
 
 ---
 
@@ -52,16 +54,26 @@ That's `src/authz.ts`, ~70 lines, and it's the whole reason for this repo.
 | The `tunnel` container sits on a docker network literally named `utils` | `config/homelab/utils/compose.yml` → `networks: default: name: utils` |
 | GitHub owner is `bigsaam` | remotes of `mytube`, `config`, `Questarr` |
 
-## Assumptions **not** verified — these block deploy
+## Verified in the 2026-07 session (fresh facts)
 
-1. **Universal SSL covers `*.enzoiwith.us`.** This is the entire reason bundles live at
-   `share-<id>.enzoiwith.us` rather than `<id>.preview.enzoiwith.us` (two labels deep,
-   which free Universal SSL does not cover). Check SSL/TLS → Edge Certificates.
-2. **A *proxied* wildcard DNS record is allowed on the plan.** Historically paid-only.
-   If blocked → create one proxied CNAME per bundle via the Cloudflare API on publish,
-   delete on `rm`. Documented in `DEPLOY.md` §4, not built.
-3. **`utils` has disk.** `config/homelab/utils/README.md` records the Docker root
-   filesystem filling twice. `docker system df` first.
+| Claim | How it was checked |
+|---|---|
+| **Universal SSL covers `*.enzoiwith.us`** (assumption 1, the big one) | Read the live cert on `mytube.enzoiwith.us`: SANs are `enzoiwith.us` + `*.enzoiwith.us`. The single-label wildcard is genuinely covered, which is what the whole `share-<id>` naming rests on |
+| **`utils` has disk** (assumption 3) | `df` on manz-utils: 40 GB free (66% used) + 16 GB reclaimable images |
+| **The Dockerfile builds** | Built clean on the first try — the predicted "expect to fix something" did **not** hit the build |
+| **The image boots and serves** in production mode (`SERVE_FILES=false`) | Ran it; `/_/health` 200, full authz flow correct |
+| **The real `deploy/homelab/Caddyfile` works unmodified** | Ran shoebox + `caddy:2-alpine` with the actual Caddyfile. anonymous→302, `?secret=`→302+Set-Cookie+clean `Location: /`, asset-with-cookie→200, no-cookie→302, and mytube/apex/`xshare-`/bad-alphabet-id all 404 |
+| **The `route{}` ordering fact, empirically** | Because `?secret=` redirected to `Location: /` (not `/index.html`), `forward_auth` demonstrably ran before `try_files` |
+
+## Assumptions still **not** verified — the one remaining deploy risk
+
+1. **A *proxied* wildcard DNS record is allowed on the plan.** Historically paid-only.
+   No Cloudflare **API token** exists in 1Password (only dashboard logins), so this
+   couldn't be settled ahead of time — but the operator has an **authenticated
+   `cloudflared` locally**, so step 6 uses `cloudflared tunnel route dns` directly (no
+   API token needed) and that command self-tests the assumption: it either creates the
+   record or Cloudflare rejects it. If rejected → per-bundle proxied CNAME on publish,
+   `DEPLOY.md` §4, not built.
 
 ---
 
@@ -92,7 +104,7 @@ That's `src/authz.ts`, ~70 lines, and it's the whole reason for this repo.
 ```bash
 cd ~/workspace/shoebox
 npm ci
-npm run typecheck && npm test        # 41 tests
+npm run typecheck && npm test        # 46 tests
 ```
 
 To re-run the full stack locally without Docker (the scratchpad Caddy binary from last
@@ -135,21 +147,39 @@ In order. Full commands in [`DEPLOY.md`](DEPLOY.md).
 
 ### Deliberately not built
 
-- **Cloudflare DNS API integration.** Only needed if assumption 2 fails.
+- **Cloudflare DNS API integration.** Only needed if the wildcard-DNS assumption fails.
 - **CI beyond build.** No deploy step; watchtower pulls `:latest`.
 - **Any listing UI.** See invariants.
 - **Non-static apps.** No server-side code runs in a bundle, on purpose.
 
 ---
 
-## Open questions for the operator
+## Operator decisions — settled 2026-07
+
+- **Repo visibility: public.** Step 1 stays `gh repo create bigsaam/shoebox --public`.
+- **Default TTL: 90 days.** Done in `47f355e` — `shoebox put` defaults to `--ttl 90d`,
+  `--ttl never` opts out. The default is a CLI policy; the server primitive (absent TTL
+  = forever) is unchanged.
+- **`SHOEBOX_SESSION_TTL`: kept at 30d.** A bypass-link viewer keeps access for a month;
+  accepted, since the bypass secret is already "the credential."
+
+Still genuinely open (not blocking):
 
 - Wildcard DNS makes every nonexistent subdomain resolve and hit shoebox-caddy's 404
-  instead of returning NXDOMAIN. Acceptable?
-- `SHOEBOX_SESSION_TTL` is 30d. A viewer who opened a bypass link keeps access for that
-  long without re-entering anything. Shorter?
-- Bundles never expire unless `--ttl` is passed. Worth defaulting `shoebox put` to
-  `--ttl 90d` and letting `--ttl never` opt out?
+  instead of returning NXDOMAIN. Acceptable? (One of the operator's own earlier questions.)
+
+## Fixed this session — do not re-introduce
+
+- **macOS AppleDouble leak (`1b9ac19`).** `tar` on a Mac emitted `._<name>` sidecars
+  into every bundle, carrying `com.apple.metadata:kMDItemWhereFroms` — *the URL a file
+  was downloaded from*. Reproduced it leaking an internal URL into a published bundle.
+  Fixed at the trust boundary (`isMacMetadata` filter in `api.ts`'s `tar.x`, so it holds
+  for any client) **and** at the source (`COPYFILE_DISABLE=1` in the CLI). Regression
+  test asserts on stored files, so it fails on Linux CI too. If you ever loosen the
+  `tar.x` filter, keep AppleDouble + `.DS_Store` excluded.
+
+Test count is now **46** (was 41): +3 CLI (`test/cli.test.ts`, first coverage of
+`bin/shoebox.mjs`) and +2 AppleDouble/junk in `test/server.test.ts`.
 
 ---
 
