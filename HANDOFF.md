@@ -68,12 +68,14 @@ That's `src/authz.ts`, ~70 lines, and it's the whole reason for this repo.
 ## Assumptions still **not** verified — the one remaining deploy risk
 
 1. **A *proxied* wildcard DNS record is allowed on the plan.** Historically paid-only.
-   No Cloudflare **API token** exists in 1Password (only dashboard logins), so this
-   couldn't be settled ahead of time — but the operator has an **authenticated
-   `cloudflared` locally**, so step 6 uses `cloudflared tunnel route dns` directly (no
-   API token needed) and that command self-tests the assumption: it either creates the
-   record or Cloudflare rejects it. If rejected → per-bundle proxied CNAME on publish,
-   `DEPLOY.md` §4, not built.
+   The operator's **authenticated `cloudflared`** covers `cloudflared tunnel create
+   shoebox` (DEPLOY.md step 3) with no separate API token — but **not** the wildcard
+   record: `cloudflared tunnel route dns` explicitly refuses wildcards (DEPLOY.md §4).
+   So the `*.enzoiwith.us` CNAME → `<UUID>.cfargotunnel.com` (proxied) is created in the
+   Cloudflare **dashboard**, and that create either succeeds or the plan rejects it —
+   which is where the assumption gets settled. No CF API token exists in 1Password
+   (dashboard logins only). If rejected → per-bundle proxied CNAME on publish via the
+   API, `DEPLOY.md` §4, not built.
 
 ---
 

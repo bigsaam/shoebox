@@ -9,11 +9,11 @@ Everything below has been designed and tested locally; **nothing has been deploy
 
 | | |
 |---|---|
-| Code | Complete. 41 tests, typecheck clean. |
+| Code | Complete. 46 tests, typecheck clean. |
 | Caddyfile | Passes `caddy validate` (Caddy 2.11.4), `caddy fmt`-clean. |
-| End-to-end | Verified locally: real Caddy in front of shoebox, driven by `Host: share-<id>.enzoiwith.us`. Secret→cookie exchange, asset loading, sibling-host 404s, cross-bundle cookie forgery all confirmed. |
-| CI | `.github/workflows/docker.yml` → `ghcr.io/bigsaam/shoebox`, gated on tests + typecheck + `caddy validate`. Never run. |
-| Deployed | **No.** No image pushed, no tunnel created, no DNS record. |
+| End-to-end | Verified locally against the **real `deploy/homelab/Caddyfile` + the built image**: `Host: share-<id>.enzoiwith.us` secret→cookie exchange, clean `Location: /`, asset loading on the cookie alone, sibling-host 404s, cross-bundle cookie forgery all confirmed. |
+| CI | `.github/workflows/docker.yml` → `ghcr.io/bigsaam/shoebox`. **First run green (2026-07).** Image public, anonymously pullable. |
+| Deployed | **No** to manz-utils. Repo + image exist; no tunnel created, no DNS record. |
 
 ## Decisions already locked
 
@@ -31,40 +31,32 @@ Everything below has been designed and tested locally; **nothing has been deploy
 
 ---
 
-## ⚠️ Verify these three before deploying
+## ⚠️ Verify before deploying — two of three now settled (2026-07)
 
-They are assumptions, not facts I could check from a laptop. Each one blocks deploy.
+1. ✅ **Universal SSL covers `*.enzoiwith.us`.** Confirmed by reading the live cert on
+   `mytube.enzoiwith.us`: SANs are `enzoiwith.us` + `*.enzoiwith.us`. The single-label
+   wildcard is genuinely covered. *(If it had not been: path mode — unset
+   `SHOEBOX_HOST_TEMPLATE`, set `SHOEBOX_SERVE_FILES=true`, drop Caddy.)*
 
-1. **Universal SSL covers `*.enzoiwith.us`.**
-   Cloudflare → your zone → SSL/TLS → Edge Certificates. Confirm the Universal
-   certificate lists `*.enzoiwith.us` alongside `enzoiwith.us`.
-   *If it does not:* bundles won't load over HTTPS. Fall back to path mode (unset
-   `SHOEBOX_HOST_TEMPLATE`, set `SHOEBOX_SERVE_FILES=true`, drop Caddy).
+2. ⚠️ **Your plan allows a *proxied* wildcard DNS record.** Still unverified — the only
+   thing that gates deploy. Create `*.enzoiwith.us` CNAME →
+   `<SHOEBOX_TUNNEL_UUID>.cfargotunnel.com` (proxied) **in the dashboard**;
+   `cloudflared tunnel route dns` cannot make wildcards (see §4). The create succeeds or
+   the plan rejects it. *If blocked:* one proxied CNAME per bundle via the Cloudflare API
+   on publish, delete on `rm` (§4). Tunnel ingress needs no change either way.
 
-2. **Your plan allows a *proxied* wildcard DNS record.**
-   Proxied wildcards have historically been a paid-plan feature. Try creating
-   `*.enzoiwith.us` CNAME → `<SHOEBOX_TUNNEL_UUID>.cfargotunnel.com` (proxied).
-   *If it is blocked:* have shoebox create one proxied CNAME per bundle through the
-   Cloudflare API on publish and delete it on `rm` (see §4). The tunnel ingress needs
-   no change either way — only the DNS record has to exist.
-
-3. **`utils` has disk.** `homelab/utils/README.md` records the Docker root filesystem
-   filling twice. Run `docker system df` before adding a service that stores uploads.
+3. ✅ **`utils` has disk.** `df` on manz-utils: 40 GB free (66% used) + 16 GB
+   reclaimable images. Fine for uploads.
 
 ---
 
 ## Step by step
 
-### 0. Publish the repo
+### 0. Publish the repo — ✅ DONE (2026-07)
 
-```bash
-cd ~/workspace/shoebox
-gh repo create bigsaam/shoebox --public --source=. --push
-```
-
-The first Actions run builds and pushes `ghcr.io/bigsaam/shoebox:latest`.
-**Then make the GHCR package public** (Packages → shoebox → Package settings), or add
-a pull secret on the host.
+`https://github.com/bigsaam/shoebox` (public). The first Actions run went green and
+pushed `ghcr.io/bigsaam/shoebox:latest`; the GHCR package is **public and verified
+anonymously pullable** (`sha-2dd32e5` + `latest`). Nothing to do here — start at step 1.
 
 ### 1. Secrets
 
