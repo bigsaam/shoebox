@@ -78,7 +78,7 @@ never be served as a file** — not by traversal, not by a forgotten deny rule.
 
 ```bash
 cloudflared tunnel create shoebox                       # note the UUID
-cp ~/.cloudflared/<UUID>.json ./cloudflared/ && chmod 600 ./cloudflared/<UUID>.json
+cp ~/.cloudflared/<UUID>.json ./cloudflared/ && chmod 644 ./cloudflared/<UUID>.json  # 644: cloudflared runs as uid 65532, reads via world-read (600 fails)
 cp cloudflared/config.yml.example cloudflared/config.yml # fill in the UUID, twice
 docker compose up -d shoebox-tunnel
 ```

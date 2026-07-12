@@ -100,7 +100,10 @@ catch-all — Caddy already 404s any host that is not `share-<id>.enzoiwith.us`.
 ```bash
 cloudflared tunnel create shoebox            # note the UUID
 cp ~/.cloudflared/<UUID>.json /docker/services/shoebox/cloudflared/
-chmod 600 /docker/services/shoebox/cloudflared/<UUID>.json
+# 644, not 600: cloudflared:latest runs as uid 65532 and reads the creds via
+# world-read. 600 (owned by you) makes the tunnel's first start fail with
+# "permission denied" — matches the working utils tunnel, whose JSON is 644.
+chmod 644 /docker/services/shoebox/cloudflared/<UUID>.json
 cp deploy/homelab/cloudflared/config.yml.example \
    /docker/services/shoebox/cloudflared/config.yml
 # fill in <SHOEBOX_TUNNEL_UUID> in that file, twice

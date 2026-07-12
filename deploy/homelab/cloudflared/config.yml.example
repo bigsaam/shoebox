@@ -11,7 +11,9 @@
 #   cloudflared tunnel create shoebox
 #   # note the UUID it prints, and the credentials JSON it writes to ~/.cloudflared/
 #   cp ~/.cloudflared/<UUID>.json /docker/services/shoebox/cloudflared/
-#   chmod 600 /docker/services/shoebox/cloudflared/<UUID>.json
+#   # 644, not 600: cloudflared:latest runs as uid 65532 and needs world-read.
+#   # 600 (owned by you) fails the first tunnel start with "permission denied".
+#   chmod 644 /docker/services/shoebox/cloudflared/<UUID>.json
 #
 # Then the DNS record (proxied), which is what actually makes bundles resolve:
 #
