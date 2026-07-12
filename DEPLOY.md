@@ -1,7 +1,9 @@
 # shoebox — deployment runbook
 
 Written to be picked up cold, by a person or an agent, in a later session.
-Everything below has been designed and tested locally; **nothing has been deployed.**
+
+**shoebox is deployed and live on manz-utils** (2026-07). The steps below are kept as
+the record of how it got there and how to rebuild it; they are no longer a to-do list.
 
 ---
 
@@ -13,7 +15,7 @@ Everything below has been designed and tested locally; **nothing has been deploy
 | Caddyfile | Passes `caddy validate` (Caddy 2.11.4), `caddy fmt`-clean. |
 | End-to-end | Verified locally against the **real `deploy/homelab/Caddyfile` + the built image**: `Host: share-<id>.enzoiwith.us` secret→cookie exchange, clean `Location: /`, asset loading on the cookie alone, sibling-host 404s, cross-bundle cookie forgery all confirmed. |
 | CI | `.github/workflows/docker.yml` → `ghcr.io/bigsaam/shoebox`. **First run green (2026-07).** Image public, anonymously pullable. |
-| Deployed | **No** to manz-utils. Repo + image exist; no tunnel created, no DNS record. |
+| Deployed | **Yes — live.** `shoebox` + `shoebox-caddy` + `shoebox-tunnel` up on manz-utils; proxied wildcard DNS in place. First real bundle published and fetched over the public tunnel. |
 
 ## Decisions already locked
 
@@ -38,12 +40,11 @@ Everything below has been designed and tested locally; **nothing has been deploy
    wildcard is genuinely covered. *(If it had not been: path mode — unset
    `SHOEBOX_HOST_TEMPLATE`, set `SHOEBOX_SERVE_FILES=true`, drop Caddy.)*
 
-2. ⚠️ **Your plan allows a *proxied* wildcard DNS record.** Still unverified — the only
-   thing that gates deploy. Create `*.enzoiwith.us` CNAME →
-   `<SHOEBOX_TUNNEL_UUID>.cfargotunnel.com` (proxied) **in the dashboard**;
-   `cloudflared tunnel route dns` cannot make wildcards (see §4). The create succeeds or
-   the plan rejects it. *If blocked:* one proxied CNAME per bundle via the Cloudflare API
-   on publish, delete on `rm` (§4). Tunnel ingress needs no change either way.
+2. ✅ **A *proxied* wildcard DNS record is allowed on the plan.** Settled by doing it:
+   `*.enzoiwith.us` CNAME → `<SHOEBOX_TUNNEL_UUID>.cfargotunnel.com` (proxied) exists and
+   resolves, and a bundle has been served through it end-to-end over HTTPS. The
+   per-bundle-CNAME fallback in §4 is therefore **never needed** — do not build it.
+   (`cloudflared tunnel route dns` still cannot make wildcards; this was a dashboard create.)
 
 3. ✅ **`utils` has disk.** `df` on manz-utils: 40 GB free (66% used) + 16 GB
    reclaimable images. Fine for uploads.
@@ -150,8 +151,14 @@ and it leaves one public DNS record per artifact. The wildcard leaves nothing be
 On the Mac and the dev box:
 
 ```bash
-shoebox init --url http://manz-utils:8080 --token 'op://Homelab/shoebox/api-token'
+shoebox init --url http://manz-utils:8087 --token 'op://Homelab/shoebox/api-token'
 ```
+
+**Mind the port.** The container always listens on 8080 internally, but the *published*
+host port is `SHOEBOX_HOST_PORT` — on manz-utils that is **8087**, because `:8080` is
+birdnet, `:8081`/`:8082` are shopwala, and `:8083` (sure) is firewalled to the Authentik
+outpost. Pointing the CLI at `:8080` silently reaches **birdnet**, which answers
+`{"message":"Not Found"}` — shoebox's own 404 is plain text, so that JSON is the tell.
 
 Publishing goes over Tailscale; the link that comes back is the public HTTPS URL.
 Symlink `bin/shoebox.mjs` onto `PATH` (it has no npm dependencies).

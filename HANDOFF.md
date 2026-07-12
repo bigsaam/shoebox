@@ -4,10 +4,15 @@ Read this first, then [`AGENTS.md`](AGENTS.md) (what the thing does), then
 [`DEPLOY.md`](DEPLOY.md) (the runbook). This file is the context you cannot
 reconstruct from the code.
 
-**Repo:** `~/workspace/shoebox` · committed on `main` · **no git remote yet**
-**Status:** built, tested, verified locally. **Never deployed.** The image now builds
-clean and the full stack (real `deploy/homelab/Caddyfile` + the image) has run
-end-to-end under Docker locally — see "Verified in the 2026-07 session" below.
+**Repo:** `github.com/bigsaam/shoebox` (public) · `main`
+**Status: DEPLOYED AND LIVE** on manz-utils (2026-07). All three containers up, proxied
+wildcard DNS in place, and a real bundle published and fetched over the public tunnel.
+Every assumption that once blocked deploy is now settled. The CLI is wired on this Mac
+(`~/.config/shoebox/config.json` → `http://manz-utils:8087`).
+
+**The port trap:** shoebox listens on 8080 inside the container, but publishes on
+**8087** on manz-utils (`SHOEBOX_HOST_PORT`) — `:8080` there is birdnet. A JSON
+`{"message":"Not Found"}` means you are talking to birdnet; shoebox's 404 is plain text.
 
 ---
 
@@ -65,17 +70,12 @@ That's `src/authz.ts`, ~70 lines, and it's the whole reason for this repo.
 | **The real `deploy/homelab/Caddyfile` works unmodified** | Ran shoebox + `caddy:2-alpine` with the actual Caddyfile. anonymous→302, `?secret=`→302+Set-Cookie+clean `Location: /`, asset-with-cookie→200, no-cookie→302, and mytube/apex/`xshare-`/bad-alphabet-id all 404 |
 | **The `route{}` ordering fact, empirically** | Because `?secret=` redirected to `Location: /` (not `/index.html`), `forward_auth` demonstrably ran before `try_files` |
 
-## Assumptions still **not** verified — the one remaining deploy risk
+## No assumptions remain unverified
 
-1. **A *proxied* wildcard DNS record is allowed on the plan.** Historically paid-only.
-   The operator's **authenticated `cloudflared`** covers `cloudflared tunnel create
-   shoebox` (DEPLOY.md step 3) with no separate API token — but **not** the wildcard
-   record: `cloudflared tunnel route dns` explicitly refuses wildcards (DEPLOY.md §4).
-   So the `*.enzoiwith.us` CNAME → `<UUID>.cfargotunnel.com` (proxied) is created in the
-   Cloudflare **dashboard**, and that create either succeeds or the plan rejects it —
-   which is where the assumption gets settled. No CF API token exists in 1Password
-   (dashboard logins only). If rejected → per-bundle proxied CNAME on publish via the
-   API, `DEPLOY.md` §4, not built.
+The last one — **a proxied wildcard DNS record on this Cloudflare plan** — was settled by
+doing it. `*.enzoiwith.us` → `<UUID>.cfargotunnel.com` (proxied) exists, resolves, and has
+served a real bundle over HTTPS. **The per-bundle-CNAME fallback in DEPLOY.md §4 is dead
+code — do not build it.**
 
 ---
 
@@ -131,25 +131,25 @@ What that must show: anonymous → 302 login · valid secret → 302 + `Set-Cook
 
 ## What is left
 
-In order. Full commands in [`DEPLOY.md`](DEPLOY.md).
+**Nothing to deploy — it is live.** Everything the old checklist listed (repo, image,
+1Password item, compose on manz-utils, dedicated tunnel, wildcard DNS, CLI wiring, smoke
+test, backport to `config/homelab/utils/shoebox/`) is done.
 
-1. `gh repo create bigsaam/shoebox --public --source=. --push` — first Actions run
-   builds `ghcr.io/bigsaam/shoebox:latest`. **This is the first time the Dockerfile is
-   ever built.** Expect to fix something.
-2. Make the GHCR package public.
-3. 1Password item `Homelab/shoebox`: `password`, `api-token`, `session-secret`.
-4. `docker compose up -d shoebox shoebox-caddy` on manz-utils — *not* the tunnel yet;
-   it crash-loops until step 5 writes its config.
-5. `cloudflared tunnel create shoebox`, drop credentials + `config.yml` into
-   `cloudflared/`, `up -d shoebox-tunnel`.
-6. Proxied wildcard CNAME `*.enzoiwith.us` → `<UUID>.cfargotunnel.com`.
-7. `shoebox init --url http://manz-utils:8080 --token 'op://Homelab/shoebox/api-token'`
-   on the Mac and the dev box; symlink `bin/shoebox.mjs` onto `PATH`.
-8. Smoke test, then backport service config to `config/homelab/utils/shoebox/`.
+Two things surfaced only at deploy time and are worth remembering, because both would
+otherwise be rediscovered the hard way:
+
+- **Port collision.** `:8080` on manz-utils is birdnet; `:8081`/`:8082` are shopwala;
+  `:8083` (sure) is firewalled to the Authentik outpost. shoebox publishes on **8087** via
+  `SHOEBOX_HOST_PORT` while still listening on 8080 inside the container.
+- **Tunnel credentials JSON must be `chmod 644`, not 600.** `cloudflared:latest` runs as
+  uid 65532 and reads the creds via world-read; 600 makes the tunnel fail to start.
+
+Open, but not a problem: wildcard DNS means every nonexistent subdomain resolves and hits
+shoebox-caddy's 404 instead of returning NXDOMAIN. Accepted.
 
 ### Deliberately not built
 
-- **Cloudflare DNS API integration.** Only needed if the wildcard-DNS assumption fails.
+- **Cloudflare DNS API integration.** The wildcard works, so this is permanently unnecessary.
 - **CI beyond build.** No deploy step; watchtower pulls `:latest`.
 - **Any listing UI.** See invariants.
 - **Non-static apps.** No server-side code runs in a bundle, on purpose.
@@ -158,7 +158,7 @@ In order. Full commands in [`DEPLOY.md`](DEPLOY.md).
 
 ## Operator decisions — settled 2026-07
 
-- **Repo visibility: public.** Step 1 stays `gh repo create bigsaam/shoebox --public`.
+- **Repo visibility: public.** Done — `github.com/bigsaam/shoebox`.
 - **Default TTL: 90 days.** Done in `47f355e` — `shoebox put` defaults to `--ttl 90d`,
   `--ttl never` opts out. The default is a CLI policy; the server primitive (absent TTL
   = forever) is unchanged.

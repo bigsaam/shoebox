@@ -100,9 +100,14 @@ which the CLI resolves through the 1Password CLI — matching the homelab conven
 ```bash
 # Anywhere on the tailnet — publishes straight to the homelab VM.
 node /path/to/shoebox/bin/shoebox.mjs init \
-  --url http://manz-utils:8080 \
+  --url http://manz-utils:8087 \
   --token 'op://Homelab/shoebox/api-token'
 ```
+
+**The port is 8087, not 8080.** shoebox listens on 8080 *inside* the container, but on
+manz-utils the published host port is 8087 (`SHOEBOX_HOST_PORT`) — `:8080` there is
+birdnet. If `init` seems to work but every call 404s with `{"message":"Not Found"}`,
+you are talking to birdnet: shoebox's own 404 is plain text, never JSON.
 
 The printed link is always the public `https://share-<id>.enzoiwith.us/` URL,
 never the address you published to. Publish over Tailscale, share over the internet.

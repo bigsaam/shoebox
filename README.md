@@ -63,7 +63,7 @@ JavaScript can never read another's, and its session cookie is host-only.
 way to enumerate them is `shoebox ls`, which needs the API token.
 
 **Publish privately, share publicly.** The CLI can post over Tailscale to
-`http://manz-utils:8080`; the link it prints is still the public HTTPS URL. Links
+`http://manz-utils:8087`; the link it prints is still the public HTTPS URL. Links
 are built from `SHOEBOX_HOST_TEMPLATE`, never from the request host.
 
 **Static only.** No server-side code, no sandbox to get wrong.
