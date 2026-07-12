@@ -38,7 +38,10 @@ services:
     ports:
       # `tailscale ip -4` on manz-utils. Binding the Tailscale address (not 0.0.0.0)
       # keeps the upload API off the LAN while letting any tailnet host publish.
-      - "${SHOEBOX_BIND_ADDR:-127.0.0.1}:8080:8080"
+      # Host-side port is a knob: on manz-utils, :8080 is taken (birdnet publishes
+      # 0.0.0.0:8080) and :8083 is firewalled to a single admin host by a DOCKER-USER
+      # rule, so shoebox publishes 8087 there. The container still listens on 8080.
+      - "${SHOEBOX_BIND_ADDR:-127.0.0.1}:${SHOEBOX_HOST_PORT:-8080}:8080"
     volumes:
       - ./data:/data
     healthcheck:
