@@ -361,6 +361,14 @@ test("robots.txt disallows everything", async () => {
   assert.match(res.body, /Disallow: \//);
 });
 
+test("the branded 404 page is served at /_/notfound", async () => {
+  const res = await app.inject({ method: "GET", url: "/_/notfound" });
+  assert.equal(res.statusCode, 404);
+  assert.match(res.headers["content-type"] as string, /text\/html/);
+  assert.match(res.body, /Nothing here/);
+  assert.match(res.body, /noindex/); // must not be indexable
+});
+
 test("the bare id redirects to the trailing-slash form, preserving the secret", async () => {
   const { id, secret } = (await publish({ "index.html": "<h1>hi</h1>" })).json();
 

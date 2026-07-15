@@ -16,7 +16,7 @@ import {
   issueCookie,
   LoginLimiter,
 } from "./auth.js";
-import { loginPage } from "./pages.js";
+import { loginPage, notFoundPage } from "./pages.js";
 import { idFromHost, linkFor, secretLinkFor } from "./links.js";
 import { Store, isMacMetadata, isSafeEntry, resolveWithin, type Bundle } from "./store.js";
 import { isValidId } from "./ids.js";
@@ -118,6 +118,12 @@ export function registerApiRoutes(app: FastifyInstance, store: Store, cfg: Confi
 
   app.get("/robots.txt", async (_req, reply) =>
     reply.type("text/plain").send("User-agent: *\nDisallow: /\n"),
+  );
+
+  // The branded 404. Caddy rewrites any unrouted host (the wildcard catch-all) here,
+  // and authz.ts renders the same page for a removed or expired bundle.
+  app.get("/_/notfound", async (_req, reply) =>
+    reply.code(404).type("text/html").send(notFoundPage()),
   );
 
   app.get("/_/login", async (req, reply) => {

@@ -21,6 +21,21 @@ background:var(--acc);color:var(--bg);cursor:pointer}
 @media(prefers-color-scheme:dark){.err{color:#fca5a5}}
 `;
 
+export function notFoundPage(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>shoebox — not found</title><style>${STYLE}
+.card{text-align:center}.emoji{font-size:2.75rem;line-height:1;margin-bottom:.4rem}
+h1{margin:0 0 .5rem}p.sub{margin:0}
+</style></head>
+<body><div class="card">
+<div class="emoji">📦</div>
+<h1>Nothing here</h1>
+<p class="sub">This preview link has expired, been taken down, or never existed.<br>
+Ask whoever shared it for a fresh one.</p>
+</div></body></html>`;
+}
+
 export function loginPage(next: string, failed: boolean): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

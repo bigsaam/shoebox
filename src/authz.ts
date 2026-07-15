@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Config } from "./config.js";
 import { checkBundleSecret, isAuthorized, issueCookie } from "./auth.js";
 import { idFromHost } from "./links.js";
+import { notFoundPage } from "./pages.js";
 import { Store } from "./store.js";
 
 /**
@@ -46,13 +47,13 @@ export function registerAuthzRoute(app: FastifyInstance, store: Store, cfg: Conf
   const handler = async (req: FastifyRequest, reply: FastifyReply) => {
     const uri = forwardedUri(req);
     const id = idFromHost(cfg, forwardedHost(req));
-    if (!id) return reply.code(404).send("not found");
+    if (!id) return reply.code(404).type("text/html").send(notFoundPage());
 
     const meta = await store.read(id);
-    if (!meta) return reply.code(404).send("not found");
+    if (!meta) return reply.code(404).type("text/html").send(notFoundPage());
     if (Store.isExpired(meta)) {
       void store.remove(id);
-      return reply.code(404).send("not found");
+      return reply.code(404).type("text/html").send(notFoundPage());
     }
 
     if (isAuthorized(req, id, cfg)) {

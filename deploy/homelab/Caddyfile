@@ -63,9 +63,11 @@
 		}
 	}
 
-	# Any other host. There is no index: knowing the password must not reveal
-	# which bundles exist.
+	# Any other host — an unrouted wildcard subdomain. There is no index: knowing
+	# the password must not reveal which bundles exist, so every one gets the same
+	# branded 404 that a removed bundle does (shoebox serves it at /_/notfound).
 	handle {
-		respond "not found" 404
+		rewrite * /_/notfound
+		reverse_proxy shoebox:8080
 	}
 }
