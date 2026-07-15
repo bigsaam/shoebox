@@ -7,9 +7,17 @@ import * as tar from "tar";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Config } from "./config.js";
 import { parseDuration } from "./config.js";
-import { ALL_SCOPE, checkApiToken, checkPassword, cookieName, issueCookie, LoginLimiter } from "./auth.js";
+import {
+  ALL_SCOPE,
+  checkApiToken,
+  checkPassword,
+  cookieName,
+  isAuthorized,
+  issueCookie,
+  LoginLimiter,
+} from "./auth.js";
 import { loginPage } from "./pages.js";
-import { linkFor, secretLinkFor } from "./links.js";
+import { idFromHost, linkFor, secretLinkFor } from "./links.js";
 import { Store, isMacMetadata, isSafeEntry, resolveWithin, type Bundle } from "./store.js";
 import { isValidId } from "./ids.js";
 
@@ -78,6 +86,28 @@ function requireToken(req: FastifyRequest, reply: FastifyReply, cfg: Config): bo
   return false;
 }
 
+/** How long to wait on a bundle's backend before giving up with a 502. */
+const API_PROXY_TIMEOUT_MS = 15_000;
+
+/**
+ * Validate an operator-supplied backend URL. Returns the normalized origin (no
+ * trailing slash), `null` to clear it, or `undefined` if it is not an http(s) URL.
+ * Only a token-holder ever reaches this, so this is a sanity check, not a trust
+ * boundary — the value it yields is the *only* place `/api/*` can be proxied to.
+ */
+function parseUpstream(value: string): string | null | undefined {
+  const v = value.trim();
+  if (v === "" || v.toLowerCase() === "none") return null;
+  let url: URL;
+  try {
+    url = new URL(v);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+  return v.replace(/\/+$/, "");
+}
+
 export function registerApiRoutes(app: FastifyInstance, store: Store, cfg: Config): void {
   // Hand the upload straight to the handler as a stream; never buffer a bundle in memory.
   for (const ct of ["application/gzip", "application/octet-stream"]) {
@@ -143,12 +173,21 @@ export function registerApiRoutes(app: FastifyInstance, store: Store, cfg: Confi
       }
     }
 
+    let apiUpstream: string | null = null;
+    if (h["x-shoebox-api"] !== undefined) {
+      const parsed = parseUpstream(h["x-shoebox-api"]);
+      if (parsed === undefined) {
+        return reply.code(400).send({ error: "invalid api upstream (must be an http/https URL)" });
+      }
+      apiUpstream = parsed;
+    }
+
     const id = await store.allocate();
     const dir = store.bundleDir(id);
     try {
       await extractInto(req, cfg, dir, entry);
 
-      const meta = store.newBundle(id, name, entry, ttlMs);
+      const meta = store.newBundle(id, name, entry, ttlMs, apiUpstream);
       Object.assign(meta, await store.stats(dir));
       await store.writeMeta(meta);
 
@@ -197,6 +236,16 @@ export function registerApiRoutes(app: FastifyInstance, store: Store, cfg: Confi
       }
     }
 
+    // Api upstream: no header → leave as-is; "none" → clear; otherwise → set.
+    let apiUpstream: string | null | undefined = undefined;
+    if (h["x-shoebox-api"] !== undefined) {
+      const parsed = parseUpstream(h["x-shoebox-api"]);
+      if (parsed === undefined) {
+        return reply.code(400).send({ error: "invalid api upstream (must be an http/https URL)" });
+      }
+      apiUpstream = parsed;
+    }
+
     const staged = await store.stage(id);
     try {
       await extractInto(req, cfg, staged, entry);
@@ -215,6 +264,7 @@ export function registerApiRoutes(app: FastifyInstance, store: Store, cfg: Confi
       bytes: stats.bytes,
       files: stats.files,
       expiresAt: expiresAt === undefined ? existing.expiresAt : expiresAt,
+      apiUpstream: apiUpstream === undefined ? (existing.apiUpstream ?? null) : apiUpstream,
     };
     await store.writeMeta(meta);
 
@@ -247,5 +297,57 @@ export function registerApiRoutes(app: FastifyInstance, store: Store, cfg: Confi
       }
     }
     return reply.send({ removed: await store.prune(olderThanMs) });
+  });
+
+  // Per-bundle backend. `/api/<path>` on a bundle host is proxied to the upstream
+  // that bundle was published with, prefix stripped, so a static bundle can call a
+  // real server on its own origin — no mixed content, no second subdomain. In
+  // production Caddy routes `/api/*` here; shoebox enforces the bundle's own auth,
+  // so it is exactly as gated as the bundle's files, on the direct port too.
+  app.all("/api/*", async (req, reply) => {
+    const host = (req.headers["x-forwarded-host"] as string | undefined) ?? req.headers.host;
+    const id = idFromHost(cfg, host);
+    if (!id) return reply.code(404).send({ error: "not found" });
+
+    const meta = await store.read(id);
+    if (!meta || Store.isExpired(meta)) return reply.code(404).send({ error: "not found" });
+    if (!meta.apiUpstream) {
+      return reply.code(404).send({ error: "this bundle has no /api backend" });
+    }
+    if (!isAuthorized(req, id, cfg)) return reply.code(401).send({ error: "unauthorized" });
+
+    // /api/votes?x=1 → <upstream>/votes?x=1 ; a bare /api → <upstream>/
+    const rest = req.url.slice("/api".length) || "/";
+    const target = meta.apiUpstream + (rest.startsWith("/") ? rest : `/${rest}`);
+
+    const method = req.method.toUpperCase();
+    let body: string | Buffer | undefined;
+    if (method !== "GET" && method !== "HEAD") {
+      if (Buffer.isBuffer(req.body) || typeof req.body === "string") body = req.body;
+      else if (req.body != null) body = JSON.stringify(req.body);
+    }
+
+    const fwd: Record<string, string> = {};
+    for (const k of ["content-type", "accept"]) {
+      const v = req.headers[k];
+      if (typeof v === "string") fwd[k] = v;
+    }
+
+    let upstream: Response;
+    try {
+      upstream = await fetch(target, {
+        method,
+        headers: fwd,
+        body,
+        signal: AbortSignal.timeout(API_PROXY_TIMEOUT_MS),
+      });
+    } catch {
+      return reply.code(502).send({ error: "the bundle's backend is unreachable" });
+    }
+
+    reply.code(upstream.status);
+    const ct = upstream.headers.get("content-type");
+    if (ct) reply.header("content-type", ct);
+    return reply.send(Buffer.from(await upstream.arrayBuffer()));
   });
 }

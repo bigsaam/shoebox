@@ -73,9 +73,31 @@ would keep serving the stale copy.
 **Static files only.** HTML, CSS, JS, images, fonts, WASM. Client-side JavaScript
 runs normally — React, canvas, charts, local storage, `fetch` to third-party APIs.
 
-**No server-side code.** There is no Node process, no Python, no database, no API
-routes. If your artifact needs a backend, either inline the data into the page or
-build something else. Do not try to work around this.
+**No server-side code in the bundle.** There is no Node process, no Python, no
+database inside a bundle. But a bundle can be pointed at an existing backend you run
+elsewhere — see below.
+
+### Giving a bundle a backend (`--api`)
+
+```bash
+shoebox put ./poll.html --api http://192.168.1.9:8765
+```
+
+When you publish (or `--update`) with `--api <url>`, requests to **`/api/*` on the
+bundle's own origin** are reverse-proxied to `<url>` (the `/api` prefix stripped), so
+the page can `fetch('/api/whatever')`. This exists because the bundle is served over
+HTTPS: a page at `share-…enzoiwith.us` **cannot** `fetch` a plain-`http://` LAN
+address (browsers block it as mixed content), and you don't want a separate subdomain
+per artifact. Same-origin `/api` solves both.
+
+- The upstream must be reachable **from the shoebox host (manz-utils)**, not just your
+  laptop — it's the container that proxies.
+- `/api` is behind the same password/secret gate as the bundle's files; an unauthorized
+  caller gets 401, and the upstream is never hit.
+- Only whoever holds the API token (i.e. you) can set the upstream. Clear it with
+  `--update <id> --api none`.
+- v1 forwards method, query, JSON/text bodies, and the response. It is not a byte-exact
+  streaming proxy (fine for JSON APIs; don't stream large uploads through it).
 
 ## Housekeeping
 

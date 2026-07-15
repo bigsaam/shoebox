@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -410,4 +411,173 @@ test("a bundle whose every member is AppleDouble junk fails, rather than publish
   const res = await publish({ "._index.html": "junk", ".DS_Store": "junk" });
   assert.equal(res.statusCode, 400);
   assert.match(res.json().error, /entry not found/);
+});
+
+// ── Per-bundle /api backend ────────────────────────────────────────────────
+// These run against a second app configured in subdomain mode (so idFromHost can
+// recover the bundle from the Host header) with a throwaway upstream server.
+
+/** Run `fn` against a fresh subdomain-mode app. */
+async function withApiApp(
+  fn: (a: FastifyInstance) => Promise<void>,
+): Promise<void> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "shoebox-api-"));
+  const c: Config = { ...cfg, dataDir: dir, hostTemplate: "{id}.preview.example.com", serveFiles: false };
+  const { app: a } = await buildServer(c);
+  await a.ready();
+  try {
+    await fn(a);
+  } finally {
+    await a.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** A throwaway upstream that records the last request and echoes the body back. */
+async function stubUpstream(): Promise<{ url: string; last: () => any; close: () => Promise<void> }> {
+  let last: any = null;
+  const srv = http.createServer((rq, rs) => {
+    let body = "";
+    rq.on("data", (c) => (body += c));
+    rq.on("end", () => {
+      last = { method: rq.method, url: rq.url, contentType: rq.headers["content-type"], body };
+      rs.writeHead(201, { "content-type": "application/json" });
+      rs.end(JSON.stringify({ ok: true, echo: body }));
+    });
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+  const port = (srv.address() as import("node:net").AddressInfo).port;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    last: () => last,
+    close: () => new Promise<void>((r) => srv.close(() => r())),
+  };
+}
+
+async function passwordCookie(a: FastifyInstance): Promise<string> {
+  const login = await a.inject({
+    method: "POST",
+    url: "/_/login",
+    payload: `password=${encodeURIComponent(PASSWORD)}&next=/`,
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  });
+  return `sb_all=${login.cookies.find((c) => c.name === "sb_all")!.value}`;
+}
+
+async function publishTo(a: FastifyInstance, extra: Record<string, string> = {}) {
+  return a.inject({
+    method: "POST",
+    url: "/_/api/bundles",
+    headers: {
+      authorization: `Bearer ${TOKEN}`,
+      "content-type": "application/gzip",
+      "x-shoebox-name": "t",
+      ...extra,
+    },
+    payload: await tarball({ "index.html": "<h1>hi</h1>" }),
+  });
+}
+
+test("a bundle's /api is proxied to its upstream — prefix stripped, method + body + query preserved", async () => {
+  await withApiApp(async (a) => {
+    const up = await stubUpstream();
+    try {
+      const pub = await publishTo(a, { "x-shoebox-api": up.url });
+      assert.equal(pub.statusCode, 201);
+      assert.equal(pub.json().apiUpstream, up.url);
+      const id = pub.json().id;
+      const host = `${id}.preview.example.com`;
+      const cookie = await passwordCookie(a);
+
+      const post = await a.inject({
+        method: "POST",
+        url: "/api/vote-batch",
+        headers: { host, cookie, "content-type": "application/json" },
+        payload: JSON.stringify({ name: "Sam", choices: [] }),
+      });
+      assert.equal(post.statusCode, 201, "upstream status is passed through");
+      assert.equal(post.json().ok, true);
+      assert.equal(up.last().method, "POST");
+      assert.equal(up.last().url, "/vote-batch", "the /api prefix is stripped");
+      assert.deepEqual(JSON.parse(up.last().body), { name: "Sam", choices: [] });
+
+      const get = await a.inject({ method: "GET", url: "/api/votes?x=1", headers: { host, cookie } });
+      assert.equal(get.statusCode, 201);
+      assert.equal(up.last().url, "/votes?x=1", "query string is preserved");
+    } finally {
+      await up.close();
+    }
+  });
+});
+
+test("/api on a bundle without a backend is a 404", async () => {
+  await withApiApp(async (a) => {
+    const id = (await publishTo(a)).json().id;
+    const cookie = await passwordCookie(a);
+    const res = await a.inject({
+      method: "GET",
+      url: "/api/x",
+      headers: { host: `${id}.preview.example.com`, cookie },
+    });
+    assert.equal(res.statusCode, 404);
+  });
+});
+
+test("/api is gated by the bundle's auth — no cookie, no proxy", async () => {
+  await withApiApp(async (a) => {
+    const up = await stubUpstream();
+    try {
+      const id = (await publishTo(a, { "x-shoebox-api": up.url })).json().id;
+      const res = await a.inject({
+        method: "GET",
+        url: "/api/votes",
+        headers: { host: `${id}.preview.example.com` },
+      });
+      assert.equal(res.statusCode, 401);
+      assert.equal(up.last(), null, "the upstream must never be hit unauthenticated");
+    } finally {
+      await up.close();
+    }
+  });
+});
+
+test("update can add and clear a bundle's /api backend", async () => {
+  await withApiApp(async (a) => {
+    const up = await stubUpstream();
+    try {
+      const id = (await publishTo(a)).json().id;
+      const host = `${id}.preview.example.com`;
+      const cookie = await passwordCookie(a);
+      const hit = () => a.inject({ method: "GET", url: "/api/x", headers: { host, cookie } });
+
+      assert.equal((await hit()).statusCode, 404, "no backend at first");
+
+      const add = await a.inject({
+        method: "PUT",
+        url: `/_/api/bundles/${id}`,
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/gzip", "x-shoebox-api": up.url },
+        payload: await tarball({ "index.html": "<h1>v2</h1>" }),
+      });
+      assert.equal(add.json().apiUpstream, up.url);
+      assert.equal((await hit()).statusCode, 201, "backend reachable after update");
+
+      const clear = await a.inject({
+        method: "PUT",
+        url: `/_/api/bundles/${id}`,
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/gzip", "x-shoebox-api": "none" },
+        payload: await tarball({ "index.html": "<h1>v3</h1>" }),
+      });
+      assert.equal(clear.json().apiUpstream, null);
+      assert.equal((await hit()).statusCode, 404, "backend cleared");
+    } finally {
+      await up.close();
+    }
+  });
+});
+
+test("a non-http api upstream is rejected at publish", async () => {
+  await withApiApp(async (a) => {
+    const res = await publishTo(a, { "x-shoebox-api": "file:///etc/passwd" });
+    assert.equal(res.statusCode, 400);
+  });
 });

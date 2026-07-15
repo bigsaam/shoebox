@@ -27,29 +27,39 @@
 	}
 
 	handle @bundle {
-		root * /srv/bundles/{re.bundle.1}
-
-		# `route` pins the written order. Without it Caddy sorts try_files ahead of
-		# forward_auth, which would rewrite `/?secret=…` to `/index.html?secret=…`
-		# before shoebox ever sees it, and the redirect would land on /index.html.
-		route {
-			# 2xx → carry on and serve the file.
-			# 302 → Caddy copies the response (and its Set-Cookie) to the browser.
-			#       That is how `?secret=…` becomes a session cookie, exactly once.
-			forward_auth shoebox:8080 {
-				uri /_/authz
-			}
-
-			try_files {path} {path}/index.html
-			file_server
+		# Same-origin backend. A bundle published with an upstream can call it at
+		# `/api/…` on its own host, dodging mixed content and a second subdomain.
+		# shoebox applies the bundle's own auth before proxying, so this is exactly
+		# as gated as the bundle's files. Matched before the file server below.
+		handle /api/* {
+			reverse_proxy shoebox:8080
 		}
 
-		encode zstd gzip
+		handle {
+			root * /srv/bundles/{re.bundle.1}
 
-		header {
-			X-Content-Type-Options nosniff
-			Referrer-Policy no-referrer
-			-Server
+			# `route` pins the written order. Without it Caddy sorts try_files ahead of
+			# forward_auth, which would rewrite `/?secret=…` to `/index.html?secret=…`
+			# before shoebox ever sees it, and the redirect would land on /index.html.
+			route {
+				# 2xx → carry on and serve the file.
+				# 302 → Caddy copies the response (and its Set-Cookie) to the browser.
+				#       That is how `?secret=…` becomes a session cookie, exactly once.
+				forward_auth shoebox:8080 {
+					uri /_/authz
+				}
+
+				try_files {path} {path}/index.html
+				file_server
+			}
+
+			encode zstd gzip
+
+			header {
+				X-Content-Type-Options nosniff
+				Referrer-Policy no-referrer
+				-Server
+			}
 		}
 	}
 

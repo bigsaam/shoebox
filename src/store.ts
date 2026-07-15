@@ -24,6 +24,13 @@ export interface Bundle {
   files: number;
   views: number;
   lastViewedAt: string | null;
+  /**
+   * Optional same-origin backend. When set, `/api/*` on the bundle's host is
+   * reverse-proxied here (prefix stripped), so a bundle can call a real server
+   * without mixed-content or a second subdomain. Only the token-holder who
+   * publishes can set it; viewers only reach it once past the bundle's auth.
+   */
+  apiUpstream: string | null;
 }
 
 /**
@@ -201,7 +208,13 @@ export class Store {
     return { bytes, files };
   }
 
-  newBundle(id: string, name: string, entry: string, ttlMs: number | null): Bundle {
+  newBundle(
+    id: string,
+    name: string,
+    entry: string,
+    ttlMs: number | null,
+    apiUpstream: string | null = null,
+  ): Bundle {
     const now = new Date();
     return {
       id,
@@ -214,6 +227,7 @@ export class Store {
       files: 0,
       views: 0,
       lastViewedAt: null,
+      apiUpstream,
     };
   }
 

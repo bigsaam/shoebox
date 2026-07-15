@@ -122,6 +122,7 @@ async function cmdPut(argv) {
       name: { type: "string" },
       entry: { type: "string" },
       update: { type: "string" },
+      api: { type: "string" },
       json: { type: "boolean", default: false },
     },
   });
@@ -154,6 +155,9 @@ async function cmdPut(argv) {
     const ttl = resolveTtl(values.ttl);
     if (ttl) headers["x-shoebox-ttl"] = ttl;
   }
+  // --api <url> gives the bundle a same-origin backend at /api/*; --api none clears it.
+  // On publish it defaults to off; on update, omitting it leaves the current one as-is.
+  if (values.api !== undefined) headers["x-shoebox-api"] = values.api;
 
   const out = updateId
     ? await api(cfg, "PUT", `/_/api/bundles/${updateId}`, { body: pack(target), headers })
@@ -164,6 +168,7 @@ async function cmdPut(argv) {
   console.log(`  link     ${out.url}`);
   console.log(`  bypass   ${out.secretUrl}`);
   console.log(`  expires  ${out.expiresAt ?? "never"}`);
+  if (out.apiUpstream) console.log(`  backend  /api/* → ${out.apiUpstream}`);
   console.log(
     updateId
       ? `\nSame link and password as before — anything you already shared still works.`
@@ -218,6 +223,7 @@ const USAGE = `shoebox — publish throwaway static bundles
 
   shoebox put <file-or-dir> [--ttl 30d] [--entry index.html] [--name x] [--json]
   shoebox put <file-or-dir> --update <id>   # replace a bundle, keeping its link
+  shoebox put <file-or-dir> --api <url>     # same-origin backend at /api/* → <url>
   shoebox ls [--json]
   shoebox rm <id>
   shoebox prune [--older-than 30d]
