@@ -10,7 +10,7 @@ import { parseDuration } from "./config.js";
 import { ALL_SCOPE, checkApiToken, checkPassword, cookieName, issueCookie, LoginLimiter } from "./auth.js";
 import { loginPage } from "./pages.js";
 import { linkFor, secretLinkFor } from "./links.js";
-import { Store, isMacMetadata, isSafeEntry, resolveWithin } from "./store.js";
+import { Store, isMacMetadata, isSafeEntry, resolveWithin, type Bundle } from "./store.js";
 import { isValidId } from "./ids.js";
 
 const limiter = new LoginLimiter();
@@ -35,6 +35,41 @@ function limitBytes(max: number): Transform {
       cb(null, chunk);
     },
   });
+}
+
+/**
+ * Stream an uploaded tarball into `dir` and confirm `entry` is a real file inside it.
+ * Shared by publish (POST) and update (PUT). Throws on an oversized upload, an unsafe
+ * archive member, or a missing entry; the caller decides how to clean up.
+ */
+async function extractInto(
+  req: FastifyRequest,
+  cfg: Config,
+  dir: string,
+  entry: string,
+): Promise<void> {
+  await pipeline(
+    req.body as unknown as Readable,
+    limitBytes(cfg.maxBundleBytes),
+    createGunzip(),
+    tar.x({
+      cwd: dir,
+      strict: true,
+      preservePaths: false,
+      filter: (p, stat) => {
+        // Symlinks and hardlinks are the classic tar escape; refuse both.
+        if (!("type" in stat) || (stat.type !== "File" && stat.type !== "Directory")) {
+          return false;
+        }
+        return !isMacMetadata(p);
+      },
+    }),
+  );
+
+  const entryPath = resolveWithin(dir, entry);
+  if (!entryPath || !(await fsp.stat(entryPath).catch(() => null))?.isFile()) {
+    throw new Error(`entry not found in bundle: ${entry}`);
+  }
 }
 
 function requireToken(req: FastifyRequest, reply: FastifyReply, cfg: Config): boolean {
@@ -111,28 +146,7 @@ export function registerApiRoutes(app: FastifyInstance, store: Store, cfg: Confi
     const id = await store.allocate();
     const dir = store.bundleDir(id);
     try {
-      await pipeline(
-        req.body as unknown as Readable,
-        limitBytes(cfg.maxBundleBytes),
-        createGunzip(),
-        tar.x({
-          cwd: dir,
-          strict: true,
-          preservePaths: false,
-          filter: (p, stat) => {
-            // Symlinks and hardlinks are the classic tar escape; refuse both.
-            if (!("type" in stat) || (stat.type !== "File" && stat.type !== "Directory")) {
-              return false;
-            }
-            return !isMacMetadata(p);
-          },
-        }),
-      );
-
-      const entryPath = resolveWithin(dir, entry);
-      if (!entryPath || !(await fsp.stat(entryPath).catch(() => null))?.isFile()) {
-        throw new Error(`entry not found in bundle: ${entry}`);
-      }
+      await extractInto(req, cfg, dir, entry);
 
       const meta = store.newBundle(id, name, entry, ttlMs);
       Object.assign(meta, await store.stats(dir));
@@ -148,6 +162,68 @@ export function registerApiRoutes(app: FastifyInstance, store: Store, cfg: Confi
       await store.remove(id);
       return reply.code(400).send({ error: (err as Error).message });
     }
+  });
+
+  // Update a bundle in place: same id, same secret, same createdAt and view count —
+  // only the files (and optionally the entry, name, or expiry) change. The link and
+  // bypass URL a viewer already has keep working. New content is staged and validated
+  // before it replaces the live bundle, so a bad upload leaves the old one untouched.
+  app.put("/_/api/bundles/:id", async (req, reply) => {
+    if (!requireToken(req, reply, cfg)) return reply;
+
+    const { id } = req.params as { id: string };
+    if (!isValidId(id)) return reply.code(400).send({ error: "invalid id" });
+
+    const existing = await store.read(id);
+    if (!existing) return reply.code(404).send({ error: "not found" });
+
+    const h = req.headers as Record<string, string | undefined>;
+    const name = (h["x-shoebox-name"] ?? existing.name).slice(0, 200);
+    const entry = h["x-shoebox-entry"] ?? "index.html";
+    if (!isSafeEntry(entry)) return reply.code(400).send({ error: "invalid entry" });
+
+    // Expiry: no ttl header → leave it as-is; "never" → clear it; otherwise → now + ttl.
+    let expiresAt: string | null | undefined = undefined;
+    const ttl = h["x-shoebox-ttl"];
+    if (ttl !== undefined) {
+      if (["never", "none", "off"].includes(ttl.toLowerCase())) {
+        expiresAt = null;
+      } else {
+        try {
+          expiresAt = new Date(Date.now() + parseDuration(ttl)).toISOString();
+        } catch (err) {
+          return reply.code(400).send({ error: (err as Error).message });
+        }
+      }
+    }
+
+    const staged = await store.stage(id);
+    try {
+      await extractInto(req, cfg, staged, entry);
+    } catch (err) {
+      await store.discardStage(id);
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+
+    const stats = await store.stats(staged);
+    await store.promote(id, staged);
+
+    const meta: Bundle = {
+      ...existing,
+      name,
+      entry,
+      bytes: stats.bytes,
+      files: stats.files,
+      expiresAt: expiresAt === undefined ? existing.expiresAt : expiresAt,
+    };
+    await store.writeMeta(meta);
+
+    const origin = originOf(req, cfg);
+    return reply.code(200).send({
+      ...meta,
+      url: linkFor(cfg, id, origin, meta.entry),
+      secretUrl: secretLinkFor(cfg, id, meta.secret, origin, meta.entry),
+    });
   });
 
   app.delete("/_/api/bundles/:id", async (req, reply) => {

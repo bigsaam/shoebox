@@ -121,12 +121,20 @@ async function cmdPut(argv) {
       ttl: { type: "string" },
       name: { type: "string" },
       entry: { type: "string" },
+      update: { type: "string" },
       json: { type: "boolean", default: false },
     },
   });
   const target = positionals[0];
-  if (!target) die("usage: shoebox put <file-or-dir> [--ttl 90d|never] [--entry index.html] [--json]");
+  if (!target) {
+    die("usage: shoebox put <file-or-dir> [--update <id>] [--ttl 90d|never] [--entry index.html] [--json]");
+  }
   if (!existsSync(target)) die(`no such path: ${target}`);
+
+  const updateId = values.update;
+  if (updateId !== undefined && !/^[bcdfghjkmnpqrstvwxyz23456789]{8}$/.test(updateId)) {
+    die(`not a valid bundle id: ${updateId}`);
+  }
 
   const cfg = loadConfig();
   if (values.entry && !statSync(target).isDirectory()) {
@@ -138,17 +146,29 @@ async function cmdPut(argv) {
     "x-shoebox-name": values.name ?? path.basename(path.resolve(target)),
     "x-shoebox-entry": entry,
   };
-  const ttl = resolveTtl(values.ttl);
-  if (ttl) headers["x-shoebox-ttl"] = ttl;
+  if (updateId) {
+    // On update, omitting --ttl leaves the existing expiry untouched; the raw flag
+    // (including "never") is forwarded so the server can reset it from now.
+    if (values.ttl !== undefined) headers["x-shoebox-ttl"] = values.ttl;
+  } else {
+    const ttl = resolveTtl(values.ttl);
+    if (ttl) headers["x-shoebox-ttl"] = ttl;
+  }
 
-  const out = await api(cfg, "POST", "/_/api/bundles", { body: pack(target), headers });
+  const out = updateId
+    ? await api(cfg, "PUT", `/_/api/bundles/${updateId}`, { body: pack(target), headers })
+    : await api(cfg, "POST", "/_/api/bundles", { body: pack(target), headers });
 
   if (values.json) return console.log(JSON.stringify(out, null, 2));
-  console.log(`published  ${out.name}`);
+  console.log(`${updateId ? "updated  " : "published"}  ${out.name}`);
   console.log(`  link     ${out.url}`);
   console.log(`  bypass   ${out.secretUrl}`);
   console.log(`  expires  ${out.expiresAt ?? "never"}`);
-  console.log(`\nShare the link plus the shared password, or send the bypass link on its own.`);
+  console.log(
+    updateId
+      ? `\nSame link and password as before — anything you already shared still works.`
+      : `\nShare the link plus the shared password, or send the bypass link on its own.`,
+  );
 }
 
 async function cmdLs(argv) {
@@ -197,6 +217,7 @@ function cmdInit(argv) {
 const USAGE = `shoebox — publish throwaway static bundles
 
   shoebox put <file-or-dir> [--ttl 30d] [--entry index.html] [--name x] [--json]
+  shoebox put <file-or-dir> --update <id>   # replace a bundle, keeping its link
   shoebox ls [--json]
   shoebox rm <id>
   shoebox prune [--older-than 30d]

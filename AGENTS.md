@@ -50,6 +50,24 @@ shoebox put ./page.html --json           # machine-readable, for scripting
   `--entry`. Relative paths, assets, fonts, images all work.
 - Bundles are capped at 100 MB.
 
+### Updating a bundle in place
+
+```bash
+shoebox put ./report.html --update k3f9qhtm   # replace the content, keep the link
+```
+
+When you revise something you've already shared, **update it — don't republish.**
+`--update <id>` swaps in the new files while keeping the **same link, the same bypass
+secret, and the same expiry**, so every link you already handed out still works and
+still shows the latest version. Republishing instead mints a new id, so the old link
+would keep serving the stale copy.
+
+- Same flags as `put` (`--entry`, `--name`) apply to the new content.
+- Expiry is left untouched unless you pass `--ttl` (which resets it from now; `--ttl
+  never` clears it).
+- The update is atomic: if the new bundle is rejected (e.g. no `index.html`), the
+  previous content keeps serving unchanged.
+
 ## What it will and will not run
 
 **Static files only.** HTML, CSS, JS, images, fonts, WASM. Client-side JavaScript

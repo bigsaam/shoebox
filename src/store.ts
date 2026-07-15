@@ -64,15 +64,19 @@ export function isMacMetadata(entryPath: string): boolean {
 export class Store {
   private readonly bundlesDir: string;
   private readonly metaDir: string;
+  /** Uploads are extracted here first, then swapped into place. Never served by Caddy. */
+  private readonly stagingDir: string;
 
   constructor(dataDir: string) {
     this.bundlesDir = path.join(dataDir, "bundles");
     this.metaDir = path.join(dataDir, "meta");
+    this.stagingDir = path.join(dataDir, "staging");
   }
 
   async init(): Promise<void> {
     await fs.mkdir(this.bundlesDir, { recursive: true });
     await fs.mkdir(this.metaDir, { recursive: true });
+    await fs.mkdir(this.stagingDir, { recursive: true });
   }
 
   bundleDir(id: string): string {
@@ -131,6 +135,44 @@ export class Store {
     await fs.rm(this.bundleDir(id), { recursive: true, force: true });
     await fs.rm(this.metaPath(id), { force: true });
     return existed;
+  }
+
+  /**
+   * A clean, empty directory to extract an update into, kept outside the served
+   * tree so a half-written or rejected upload can never be reached by a request.
+   */
+  async stage(id: string): Promise<string> {
+    if (!isValidId(id)) throw new Error(`invalid bundle id: ${id}`);
+    const dir = path.join(this.stagingDir, id);
+    await fs.rm(dir, { recursive: true, force: true });
+    await fs.mkdir(dir, { recursive: true });
+    return dir;
+  }
+
+  /** Throw away a staged upload that was never promoted. */
+  async discardStage(id: string): Promise<void> {
+    if (!isValidId(id)) return;
+    await fs.rm(path.join(this.stagingDir, id), { recursive: true, force: true });
+  }
+
+  /**
+   * Atomically replace a live bundle's files with a staged directory: move the old
+   * content out of the way, swap the new content in, then delete the old. The window
+   * where the served directory does not exist is two renames wide, and if the swap
+   * fails the previous content is restored — a request never sees a mix of the two.
+   */
+  async promote(id: string, staged: string): Promise<void> {
+    const live = this.bundleDir(id);
+    const old = path.join(this.stagingDir, `${id}.old`);
+    await fs.rm(old, { recursive: true, force: true });
+    await fs.rename(live, old);
+    try {
+      await fs.rename(staged, live);
+    } catch (err) {
+      await fs.rename(old, live).catch(() => {});
+      throw err;
+    }
+    await fs.rm(old, { recursive: true, force: true });
   }
 
   /** Fire-and-forget view accounting; a lost increment is not worth failing a page load. */

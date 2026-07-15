@@ -71,6 +71,19 @@ async function publish(files: Record<string, string>, headers: Record<string, st
   return res;
 }
 
+async function update(id: string, files: Record<string, string>, headers: Record<string, string> = {}) {
+  return app.inject({
+    method: "PUT",
+    url: `/_/api/bundles/${id}`,
+    headers: {
+      authorization: `Bearer ${TOKEN}`,
+      "content-type": "application/gzip",
+      ...headers,
+    },
+    payload: await tarball(files),
+  });
+}
+
 test("health needs no auth", async () => {
   const res = await app.inject({ method: "GET", url: "/_/health" });
   assert.equal(res.statusCode, 200);
@@ -262,6 +275,84 @@ test("delete and prune remove bundles", async () => {
   });
   assert.equal(prune.statusCode, 200);
   assert.ok(Array.isArray(prune.json().removed));
+});
+
+test("update replaces content in place, keeping the id, secret, link, and view count", async () => {
+  const created = (await publish({ "index.html": "<h1>v1</h1>", "old.js": "1" })).json();
+
+  // Put a non-zero view count on disk so we can prove an update preserves it.
+  const metaPath = path.join(dataDir, "meta", `${created.id}.json`);
+  const meta0 = JSON.parse(await fs.readFile(metaPath, "utf8"));
+  meta0.views = 5;
+  await fs.writeFile(metaPath, JSON.stringify(meta0));
+
+  const res = await update(created.id, { "index.html": "<h1>v2</h1>", "new.js": "2" });
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+
+  assert.equal(body.id, created.id, "id is preserved");
+  assert.equal(body.secret, created.secret, "secret is preserved — the bypass link still works");
+  assert.equal(body.url, created.url);
+  assert.equal(body.createdAt, created.createdAt, "createdAt is preserved");
+  assert.equal(body.views, 5, "view count survives an update");
+  assert.equal(body.files, 2);
+
+  // The new content is served, and a file dropped in v2 is really gone.
+  assert.deepEqual(await bundleFiles(created.id), ["index.html", "new.js"]);
+  const grant = await app.inject({ method: "GET", url: `/${created.id}/?secret=${created.secret}` });
+  const cookie = `sb_${created.id}=${grant.cookies.find((c) => c.name === `sb_${created.id}`)!.value}`;
+  const page = await app.inject({ method: "GET", url: `/${created.id}/`, headers: { cookie } });
+  assert.equal(page.body, "<h1>v2</h1>");
+});
+
+test("updating a bundle that does not exist is a 404", async () => {
+  const res = await update("bcdfghjk", { "index.html": "<h1>x</h1>" });
+  assert.equal(res.statusCode, 404);
+});
+
+test("a rejected update leaves the previous content intact", async () => {
+  const created = (await publish({ "index.html": "<h1>keep me</h1>" })).json();
+
+  // No index.html and no --entry → the update must fail entry validation.
+  const res = await update(created.id, { "other.html": "<h1>nope</h1>" });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json().error, /entry not found/);
+
+  // The live bundle is untouched: still one file, still the original content.
+  assert.deepEqual(await bundleFiles(created.id), ["index.html"]);
+  const grant = await app.inject({ method: "GET", url: `/${created.id}/?secret=${created.secret}` });
+  const cookie = `sb_${created.id}=${grant.cookies.find((c) => c.name === `sb_${created.id}`)!.value}`;
+  const page = await app.inject({ method: "GET", url: `/${created.id}/`, headers: { cookie } });
+  assert.equal(page.body, "<h1>keep me</h1>");
+});
+
+test("update leaves expiry alone unless a ttl is given, and can reset or clear it", async () => {
+  const created = (await publish({ "index.html": "<h1>hi</h1>" })).json(); // no ttl → null
+  assert.equal(created.expiresAt, null);
+
+  const kept = (await update(created.id, { "index.html": "<h1>hi2</h1>" })).json();
+  assert.equal(kept.expiresAt, null, "no ttl header leaves expiry untouched");
+
+  const dated = (
+    await update(created.id, { "index.html": "<h1>hi3</h1>" }, { "x-shoebox-ttl": "1h" })
+  ).json();
+  assert.ok(dated.expiresAt && Date.parse(dated.expiresAt) > Date.now(), "a ttl resets expiry from now");
+
+  const cleared = (
+    await update(created.id, { "index.html": "<h1>hi4</h1>" }, { "x-shoebox-ttl": "never" })
+  ).json();
+  assert.equal(cleared.expiresAt, null, "'never' clears expiry again");
+});
+
+test("update requires the api token", async () => {
+  const created = (await publish({ "index.html": "<h1>hi</h1>" })).json();
+  const res = await app.inject({
+    method: "PUT",
+    url: `/_/api/bundles/${created.id}`,
+    headers: { "content-type": "application/gzip" },
+    payload: await tarball({ "index.html": "<h1>x</h1>" }),
+  });
+  assert.equal(res.statusCode, 401);
 });
 
 test("robots.txt disallows everything", async () => {
